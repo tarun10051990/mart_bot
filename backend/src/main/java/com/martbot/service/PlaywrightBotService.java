@@ -140,27 +140,66 @@ public class PlaywrightBotService {
         try {
             Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
 
-            String searchUrl = botConfig.getJiomartBaseUrl() + "/search/" + query.replace(" ", "%20");
+            String searchUrl = botConfig.getJiomartBaseUrl() + "/search?q=" + query.replace(" ", "+");
             page.navigate(searchUrl);
             page.waitForLoadState(LoadState.NETWORKIDLE);
 
-            // Wait for product listings to load
-            page.locator(".plp-card-container, .product-card, [data-testid='product-card']")
-                    .first()
-                    .waitFor(new Locator.WaitForOptions().setTimeout(10000));
+            // Wait for product listings to load (JioMart uses Algolia InfiniteHits, needs time to render)
+            try {
+                page.locator(".plp-card-details-container, .ais-InfiniteHits-item, [data-testid='listing-card']")
+                        .first()
+                        .waitFor(new Locator.WaitForOptions().setTimeout(20000));
+            } catch (Exception e) {
+                log.warn("Product cards not found with primary selectors, trying fallback");
+                // Fallback: wait for any link containing /p/ (product links)
+                try {
+                    page.locator("a[href*='/p/']").first()
+                            .waitFor(new Locator.WaitForOptions().setTimeout(10000));
+                } catch (Exception ex) {
+                    log.warn("No product results found for query: {}", query);
+                    return results;
+                }
+            }
 
-            // Extract product information
-            var productCards = page.locator(".plp-card-container, .product-card, [data-testid='product-card']").all();
+            // Extract product information using multiple selector strategies
+            var productCards = page.locator(".plp-card-details-container, .ais-InfiniteHits-item, [data-testid='listing-card']").all();
+            if (productCards.isEmpty()) {
+                // Fallback: try to find product links directly
+                productCards = page.locator("a[href*='/p/']").all();
+            }
 
             int count = 0;
             for (var card : productCards) {
                 if (count >= maxResults) break;
 
                 try {
-                    String name = card.locator(".plp-card-details__name, .product-name, h3").textContent();
-                    String priceText = card.locator(".plp-card-details__price, .product-price, .jm-heading-xxs").textContent();
-                    String url = card.locator("a").first().getAttribute("href");
-                    String imgUrl = card.locator("img").first().getAttribute("src");
+                    String name = "";
+                    try {
+                        name = card.locator(".plp-card-details-name, .plp-card-details__name, [class*='product-name'], h3, [class*='name']").first().textContent();
+                    } catch (Exception e2) {
+                        name = card.textContent().split("\\n")[0].trim();
+                    }
+                    if (name.isEmpty()) continue;
+
+                    String priceText = "0";
+                    try {
+                        priceText = card.locator("[class*='price'], [class*='Price'], .jm-heading-xxs, span:has-text('₹')").first().textContent();
+                    } catch (Exception e2) {
+                        // price not found, use 0
+                    }
+
+                    String url = "";
+                    try {
+                        url = card.locator("a[href*='/p/']").first().getAttribute("href");
+                        if (url == null) url = card.locator("a").first().getAttribute("href");
+                    } catch (Exception e2) {
+                        try { url = card.locator("a").first().getAttribute("href"); } catch (Exception ignored) {}
+                    }
+
+                    String imgUrl = "";
+                    try {
+                        imgUrl = card.locator("img").first().getAttribute("src");
+                    } catch (Exception ignored) {}
 
                     double price = extractPrice(priceText);
                     String productId = extractProductId(url);
