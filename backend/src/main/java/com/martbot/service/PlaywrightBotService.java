@@ -12,8 +12,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class PlaywrightBotService {
@@ -127,6 +131,8 @@ public class PlaywrightBotService {
 
     /**
      * Search for products on JioMart.
+     * Strategy: Intercept Algolia/API network responses for reliable data extraction,
+     * with DOM-based fallback if API interception fails.
      */
     public List<ProductResult> searchProducts(BotSession session, String query, int maxResults) {
         List<ProductResult> results = new ArrayList<>();
@@ -140,87 +146,224 @@ public class PlaywrightBotService {
         try {
             Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
 
+            // Intercept API responses containing product data
+            AtomicReference<String> apiResponseBody = new AtomicReference<>(null);
+            page.onResponse(response -> {
+                String url = response.url();
+                // Capture Algolia search responses or JioMart's internal product API
+                if ((url.contains("algolia") || url.contains("/search") || url.contains("/products") || url.contains("/catalog"))
+                        && response.status() == 200
+                        && response.headers().getOrDefault("content-type", "").contains("json")) {
+                    try {
+                        String body = response.text();
+                        if (body.contains("\"hits\"") || body.contains("\"products\"") || body.contains("\"items\"") || body.contains("\"title\"")) {
+                            apiResponseBody.set(body);
+                            log.debug("Captured API response from: {}", url);
+                        }
+                    } catch (Exception ignored) {}
+                }
+            });
+
             String searchUrl = botConfig.getJiomartBaseUrl() + "/search?q=" + query.replace(" ", "+");
+            log.info("Navigating to search URL: {}", searchUrl);
             page.navigate(searchUrl);
             page.waitForLoadState(LoadState.NETWORKIDLE);
 
-            // Wait for product listings to load (JioMart uses Algolia InfiniteHits, needs time to render)
-            try {
-                page.locator(".plp-card-details-container, .ais-InfiniteHits-item, [data-testid='listing-card']")
-                        .first()
-                        .waitFor(new Locator.WaitForOptions().setTimeout(20000));
-            } catch (Exception e) {
-                log.warn("Product cards not found with primary selectors, trying fallback");
-                // Fallback: wait for any link containing /p/ (product links)
-                try {
-                    page.locator("a[href*='/p/']").first()
-                            .waitFor(new Locator.WaitForOptions().setTimeout(10000));
-                } catch (Exception ex) {
-                    log.warn("No product results found for query: {}", query);
+            // Give extra time for async API calls to complete
+            page.waitForTimeout(3000);
+
+            // Strategy 1: Parse intercepted API response (most reliable)
+            String responseBody = apiResponseBody.get();
+            if (responseBody != null) {
+                results = parseApiResponse(responseBody, maxResults);
+                if (!results.isEmpty()) {
+                    log.info("Found {} products via API interception for query: {}", results.size(), query);
                     return results;
                 }
             }
 
-            // Extract product information using multiple selector strategies
-            var productCards = page.locator(".plp-card-details-container, .ais-InfiniteHits-item, [data-testid='listing-card']").all();
-            if (productCards.isEmpty()) {
-                // Fallback: try to find product links directly
-                productCards = page.locator("a[href*='/p/']").all();
+            // Strategy 2: Use page.evaluate() to extract product data from rendered DOM
+            log.info("API interception yielded no results, trying DOM extraction for query: {}", query);
+            results = extractProductsFromDOM(page, maxResults);
+            if (!results.isEmpty()) {
+                log.info("Found {} products via DOM extraction for query: {}", results.size(), query);
+                return results;
             }
 
-            int count = 0;
-            for (var card : productCards) {
-                if (count >= maxResults) break;
+            // Strategy 3: Log page content for debugging
+            String pageTitle = page.title();
+            String pageUrl = page.url();
+            log.warn("No products found for query '{}'. Page title: '{}', URL: '{}'", query, pageTitle, pageUrl);
 
-                try {
-                    String name = "";
-                    try {
-                        name = card.locator(".plp-card-details-name, .plp-card-details__name, [class*='product-name'], h3, [class*='name']").first().textContent();
-                    } catch (Exception e2) {
-                        name = card.textContent().split("\\n")[0].trim();
-                    }
-                    if (name.isEmpty()) continue;
-
-                    String priceText = "0";
-                    try {
-                        priceText = card.locator("[class*='price'], [class*='Price'], .jm-heading-xxs, span:has-text('₹')").first().textContent();
-                    } catch (Exception e2) {
-                        // price not found, use 0
-                    }
-
-                    String url = "";
-                    try {
-                        url = card.locator("a[href*='/p/']").first().getAttribute("href");
-                        if (url == null) url = card.locator("a").first().getAttribute("href");
-                    } catch (Exception e2) {
-                        try { url = card.locator("a").first().getAttribute("href"); } catch (Exception ignored) {}
-                    }
-
-                    String imgUrl = "";
-                    try {
-                        imgUrl = card.locator("img").first().getAttribute("src");
-                    } catch (Exception ignored) {}
-
-                    double price = extractPrice(priceText);
-                    String productId = extractProductId(url);
-
-                    ProductResult product = new ProductResult(
-                            productId, name, url != null ? botConfig.getJiomartBaseUrl() + url : "",
-                            price, imgUrl != null ? imgUrl : "", true
-                    );
-                    results.add(product);
-                    count++;
-                } catch (Exception e) {
-                    log.debug("Failed to parse product card: {}", e.getMessage());
-                }
+            // Check if the page requires pincode/location setup
+            String pageContent = page.content();
+            if (pageContent.contains("pincode") || pageContent.contains("location") || pageContent.contains("deliver")) {
+                log.warn("Page may require pincode/location to be set. Try setting pincode in JioMart first.");
             }
 
-            log.info("Found {} products for query: {}", results.size(), query);
         } catch (Exception e) {
             log.error("Product search failed for query: {}", query, e);
         }
 
         return results;
+    }
+
+    /**
+     * Parse product data from intercepted API response (Algolia or JioMart internal API).
+     */
+    private List<ProductResult> parseApiResponse(String responseBody, int maxResults) {
+        List<ProductResult> results = new ArrayList<>();
+        ObjectMapper mapper = new ObjectMapper();
+
+        try {
+            JsonNode root = mapper.readTree(responseBody);
+
+            // Try Algolia format: { "results": [{ "hits": [...] }] }
+            JsonNode hits = null;
+            if (root.has("results") && root.get("results").isArray() && root.get("results").size() > 0) {
+                hits = root.get("results").get(0).get("hits");
+            } else if (root.has("hits")) {
+                hits = root.get("hits");
+            } else if (root.has("products")) {
+                hits = root.get("products");
+            } else if (root.has("items")) {
+                hits = root.get("items");
+            } else if (root.has("data") && root.get("data").has("products")) {
+                hits = root.get("data").get("products");
+            }
+
+            if (hits != null && hits.isArray()) {
+                int count = 0;
+                for (JsonNode hit : hits) {
+                    if (count >= maxResults) break;
+
+                    String name = getJsonText(hit, "title", "name", "product_name", "productName");
+                    if (name.isEmpty()) continue;
+
+                    double price = getJsonPrice(hit, "price", "selling_price", "effective_price", "sellingPrice");
+                    String url = getJsonText(hit, "url", "product_url", "slug", "link");
+                    String imgUrl = getJsonText(hit, "image", "thumbnail", "image_url", "imageUrl", "media");
+                    String productId = getJsonText(hit, "id", "product_id", "objectID", "sku", "uid");
+
+                    if (!url.startsWith("http") && !url.isEmpty()) {
+                        url = botConfig.getJiomartBaseUrl() + (url.startsWith("/") ? "" : "/") + url;
+                    }
+
+                    results.add(new ProductResult(productId, name, url, price, imgUrl, true));
+                    count++;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Failed to parse API response: {}", e.getMessage());
+        }
+
+        return results;
+    }
+
+    /**
+     * Extract products from the rendered DOM using page.evaluate().
+     */
+    @SuppressWarnings("unchecked")
+    private List<ProductResult> extractProductsFromDOM(Page page, int maxResults) {
+        List<ProductResult> results = new ArrayList<>();
+
+        try {
+            String jsCode = "(maxItems) => {"
+                    + "const products = [];"
+                    + "const productLinks = document.querySelectorAll('a[href*=\"/p/\"]');"
+                    + "const seen = new Set();"
+                    + "for (const link of productLinks) {"
+                    + "  const href = link.getAttribute('href');"
+                    + "  if (seen.has(href)) continue;"
+                    + "  seen.add(href);"
+                    + "  let card = link.closest('[class*=\"card\"], [class*=\"product\"], [class*=\"item\"], [class*=\"plp\"], li, article') || link.parentElement;"
+                    + "  let name = '';"
+                    + "  const nameEl = card.querySelector('[class*=\"name\"], [class*=\"title\"], h2, h3, h4, [class*=\"Name\"], [class*=\"Title\"]');"
+                    + "  if (nameEl) name = nameEl.textContent.trim();"
+                    + "  if (!name) name = link.textContent.trim().split('\\n')[0].trim();"
+                    + "  if (!name || name.length > 200) continue;"
+                    + "  let price = 0;"
+                    + "  const priceEl = card.querySelector('[class*=\"price\"], [class*=\"Price\"], [class*=\"amount\"]');"
+                    + "  if (priceEl) {"
+                    + "    const priceMatch = priceEl.textContent.match(/[\\d,]+\\.?\\d*/);"
+                    + "    if (priceMatch) price = parseFloat(priceMatch[0].replace(/,/g, ''));"
+                    + "  }"
+                    + "  let img = '';"
+                    + "  const imgEl = card.querySelector('img');"
+                    + "  if (imgEl) img = imgEl.src || imgEl.getAttribute('data-src') || '';"
+                    + "  products.push({ name, price, url: href, img });"
+                    + "  if (products.length >= maxItems) break;"
+                    + "}"
+                    + "if (products.length === 0) {"
+                    + "  const allCards = document.querySelectorAll('[class*=\"card\"], [class*=\"product-item\"], [class*=\"listing\"]');"
+                    + "  for (const card of allCards) {"
+                    + "    const link = card.querySelector('a');"
+                    + "    if (!link) continue;"
+                    + "    let name = '';"
+                    + "    const nameEl = card.querySelector('[class*=\"name\"], [class*=\"title\"], h2, h3, h4');"
+                    + "    if (nameEl) name = nameEl.textContent.trim();"
+                    + "    if (!name || name.length > 200) continue;"
+                    + "    let price = 0;"
+                    + "    const priceEl = card.querySelector('[class*=\"price\"]');"
+                    + "    if (priceEl) {"
+                    + "      const priceMatch = priceEl.textContent.match(/[\\d,]+\\.?\\d*/);"
+                    + "      if (priceMatch) price = parseFloat(priceMatch[0].replace(/,/g, ''));"
+                    + "    }"
+                    + "    let img = '';"
+                    + "    const imgEl = card.querySelector('img');"
+                    + "    if (imgEl) img = imgEl.src || imgEl.getAttribute('data-src') || '';"
+                    + "    products.push({ name, price, url: link.href, img });"
+                    + "    if (products.length >= maxItems) break;"
+                    + "  }"
+                    + "}"
+                    + "return products;"
+                    + "}";
+
+            List<Map<String, Object>> products = (List<Map<String, Object>>) page.evaluate(jsCode, maxResults);
+
+            if (products != null) {
+                for (Map<String, Object> p : products) {
+                    String name = String.valueOf(p.getOrDefault("name", ""));
+                    if (name.isEmpty()) continue;
+
+                    double price = p.get("price") instanceof Number ? ((Number) p.get("price")).doubleValue() : 0;
+                    String url = String.valueOf(p.getOrDefault("url", ""));
+                    String imgUrl = String.valueOf(p.getOrDefault("img", ""));
+                    String productId = extractProductId(url);
+
+                    results.add(new ProductResult(productId, name, url, price, imgUrl, true));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("DOM extraction failed: {}", e.getMessage());
+        }
+
+        return results;
+    }
+
+    private String getJsonText(JsonNode node, String... fields) {
+        for (String field : fields) {
+            if (node.has(field) && !node.get(field).isNull()) {
+                return node.get(field).asText("");
+            }
+        }
+        return "";
+    }
+
+    private double getJsonPrice(JsonNode node, String... fields) {
+        for (String field : fields) {
+            if (node.has(field) && node.get(field).isNumber()) {
+                return node.get(field).asDouble(0);
+            }
+            // Handle nested price like {"effective": {"min": 100}}
+            if (node.has(field) && node.get(field).isObject()) {
+                JsonNode priceNode = node.get(field);
+                if (priceNode.has("effective")) return priceNode.get("effective").asDouble(0);
+                if (priceNode.has("min")) return priceNode.get("min").asDouble(0);
+                if (priceNode.has("value")) return priceNode.get("value").asDouble(0);
+            }
+        }
+        return 0;
     }
 
     /**
