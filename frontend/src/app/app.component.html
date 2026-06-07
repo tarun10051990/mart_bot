@@ -1,0 +1,17 @@
+<div class="app-container">
+  <nav class="sidebar">
+    <div class="logo">
+      <h2>MartBot</h2>
+    </div>
+    <ul class="nav-links">
+      <li><a routerLink="/dashboard" routerLinkActive="active">Dashboard</a></li>
+      <li><a routerLink="/sessions" routerLinkActive="active">Sessions</a></li>
+      <li><a routerLink="/search" routerLinkActive="active">Product Search</a></li>
+      <li><a routerLink="/cart" routerLinkActive="active">Cart</a></li>
+      <li><a routerLink="/orders" routerLinkActive="active">Orders</a></li>
+    </ul>
+  </nav>
+  <main class="content">
+    <router-outlet></router-outlet>
+  </main>
+</div>

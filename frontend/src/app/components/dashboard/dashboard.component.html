@@ -1,0 +1,64 @@
+<div class="dashboard">
+  <h1>MartBot Dashboard</h1>
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <h3>Total Sessions</h3>
+      <p class="stat-value">{{ sessions.length }}</p>
+    </div>
+    <div class="stat-card active">
+      <h3>Active Sessions</h3>
+      <p class="stat-value">{{ activeSessions }}</p>
+    </div>
+    <div class="stat-card">
+      <h3>Total Orders</h3>
+      <p class="stat-value">{{ totalOrders }}</p>
+    </div>
+    <div class="stat-card success">
+      <h3>Successful Orders</h3>
+      <p class="stat-value">{{ successfulOrders }}</p>
+    </div>
+  </div>
+
+  <div class="quick-actions">
+    <h2>Quick Actions</h2>
+    <div class="action-grid">
+      <a routerLink="/sessions" class="action-card">
+        <span class="icon">🔐</span>
+        <span>Manage Sessions</span>
+      </a>
+      <a routerLink="/search" class="action-card">
+        <span class="icon">🔍</span>
+        <span>Search Products</span>
+      </a>
+      <a routerLink="/cart" class="action-card">
+        <span class="icon">🛒</span>
+        <span>View Cart</span>
+      </a>
+      <a routerLink="/orders" class="action-card">
+        <span class="icon">📦</span>
+        <span>View Orders</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="recent-sessions" *ngIf="sessions.length > 0">
+    <h2>Recent Sessions</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Last Login</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let session of sessions | slice:0:5">
+          <td>{{ session.sessionName }}</td>
+          <td><span class="status-badge" [class]="session.status.toLowerCase()">{{ session.status }}</span></td>
+          <td>{{ session.lastLoginAt | date:'short' }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>

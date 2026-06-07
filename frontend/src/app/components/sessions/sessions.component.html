@@ -1,0 +1,69 @@
+<div class="sessions-page">
+  <div class="page-header">
+    <h1>Session Management</h1>
+    <button class="btn btn-primary" (click)="showCreateForm = !showCreateForm">
+      {{ showCreateForm ? 'Cancel' : '+ New Session' }}
+    </button>
+  </div>
+
+  <div class="message" *ngIf="message" [class.success]="!message.startsWith('Error')">
+    {{ message }}
+  </div>
+
+  <!-- Create Session Form -->
+  <div class="create-form" *ngIf="showCreateForm">
+    <h2>Create New Session</h2>
+    <form (ngSubmit)="createSession()">
+      <div class="form-group">
+        <label for="sessionName">Session Name *</label>
+        <input id="sessionName" type="text" [(ngModel)]="newSession.sessionName" name="sessionName" required
+               placeholder="e.g., My JioMart Account">
+      </div>
+      <div class="form-group">
+        <label for="craAccessToken">CRA Access Token *</label>
+        <textarea id="craAccessToken" [(ngModel)]="newSession.craAccessToken" name="craAccessToken" required
+                  rows="3" placeholder="Paste cra_access_token cookie value"></textarea>
+      </div>
+      <div class="form-group">
+        <label for="craRefreshToken">CRA Refresh Token *</label>
+        <textarea id="craRefreshToken" [(ngModel)]="newSession.craRefreshToken" name="craRefreshToken" required
+                  rows="3" placeholder="Paste cra_refresh_token cookie value"></textarea>
+      </div>
+      <div class="form-group">
+        <label for="ga">_ga Cookie</label>
+        <input id="ga" type="text" [(ngModel)]="newSession.ga" name="ga"
+               placeholder="_ga cookie value (optional)">
+      </div>
+      <div class="form-group">
+        <label for="gaXgz">_ga_XGZ513W4JV Cookie</label>
+        <input id="gaXgz" type="text" [(ngModel)]="newSession.gaXgz" name="gaXgz"
+               placeholder="_ga_XGZ513W4JV cookie value (optional)">
+      </div>
+      <button type="submit" class="btn btn-primary" [disabled]="loading">
+        {{ loading ? 'Creating...' : 'Create & Login' }}
+      </button>
+    </form>
+  </div>
+
+  <!-- Sessions List -->
+  <div class="sessions-list">
+    <div class="session-card" *ngFor="let session of sessions">
+      <div class="session-info">
+        <h3>{{ session.sessionName }}</h3>
+        <span class="status-badge" [class]="session.status.toLowerCase()">{{ session.status }}</span>
+      </div>
+      <div class="session-meta">
+        <span>Created: {{ session.createdAt | date:'medium' }}</span>
+        <span *ngIf="session.lastLoginAt">Last Login: {{ session.lastLoginAt | date:'medium' }}</span>
+      </div>
+      <div class="session-actions">
+        <button class="btn btn-sm btn-success" (click)="refreshSession(session.id)">Refresh</button>
+        <button class="btn btn-sm btn-danger" (click)="deleteSession(session.id)">Delete</button>
+      </div>
+    </div>
+
+    <div class="empty-state" *ngIf="sessions.length === 0">
+      <p>No sessions yet. Create one to get started!</p>
+    </div>
+  </div>
+</div>

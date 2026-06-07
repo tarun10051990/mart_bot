@@ -1,0 +1,33 @@
+<div class="cart-page">
+  <h1>Shopping Cart</h1>
+
+  <div class="message" *ngIf="message">{{ message }}</div>
+
+  <div class="session-select-bar">
+    <select [(ngModel)]="selectedSessionId" (ngModelChange)="loadCart()" class="session-select">
+      <option [ngValue]="null" disabled>Select a session</option>
+      <option *ngFor="let s of sessions" [ngValue]="s.id">{{ s.sessionName }}</option>
+    </select>
+    <button class="btn btn-danger btn-sm" (click)="clearCart()" *ngIf="cartItems.length > 0">Clear Cart</button>
+  </div>
+
+  <div class="cart-items" *ngIf="cartItems.length > 0">
+    <div class="cart-item" *ngFor="let item of cartItems">
+      <div class="item-info">
+        <h3>{{ item.productName || item.productId }}</h3>
+        <p class="url">{{ item.productUrl }}</p>
+      </div>
+      <div class="item-meta">
+        <span class="quantity">Qty: {{ item.quantity }}</span>
+        <span class="price" *ngIf="item.price">₹{{ item.price }}</span>
+        <span class="status" [class.success]="item.addedToCart">
+          {{ item.addedToCart ? 'In Cart' : 'Failed' }}
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="empty-state" *ngIf="cartItems.length === 0 && selectedSessionId">
+    <p>Cart is empty</p>
+  </div>
+</div>
