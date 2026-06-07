@@ -34,6 +34,22 @@ public class CartController {
         }
     }
 
+    @PostMapping("/fetch-product")
+    public ResponseEntity<BotResponse<ProductResult>> fetchProductByUrl(@RequestBody java.util.Map<String, Object> request) {
+        try {
+            Long sessionId = Long.valueOf(request.get("sessionId").toString());
+            String productUrl = (String) request.get("productUrl");
+            ProductResult product = cartService.fetchProductByUrl(sessionId, productUrl);
+            if (product != null) {
+                return ResponseEntity.ok(BotResponse.success("Product fetched", product));
+            } else {
+                return ResponseEntity.ok(BotResponse.error("Could not fetch product details from URL"));
+            }
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(BotResponse.error("Fetch failed: " + e.getMessage()));
+        }
+    }
+
     @PostMapping("/add")
     public ResponseEntity<BotResponse<CartItem>> addToCart(@Valid @RequestBody AddToCartRequest request) {
         try {

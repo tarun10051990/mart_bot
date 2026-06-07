@@ -53,6 +53,12 @@ export class ApiService {
   }
 
   // Cart endpoints
+  fetchProductByUrl(sessionId: number, productUrl: string): Observable<BotResponse<ProductResult>> {
+    return this.http.post<BotResponse<ProductResult>>(`${this.baseUrl}/cart/fetch-product`, {
+      sessionId, productUrl
+    });
+  }
+
   searchProducts(sessionId: number, query: string, maxResults: number = 10): Observable<BotResponse<ProductResult[]>> {
     return this.http.post<BotResponse<ProductResult[]>>(`${this.baseUrl}/cart/search`, {
       sessionId, query, maxResults

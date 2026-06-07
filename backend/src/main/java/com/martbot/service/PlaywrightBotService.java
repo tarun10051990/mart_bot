@@ -129,6 +129,89 @@ public class PlaywrightBotService {
     }
 
     /**
+     * Fetch product details from a specific JioMart product URL.
+     */
+    @SuppressWarnings("unchecked")
+    public ProductResult fetchProductByUrl(BotSession session, String productUrl) {
+        BrowserContext context = activeSessions.get(session.getId());
+
+        if (context == null) {
+            log.error("No active session found for session ID: {}", session.getId());
+            return null;
+        }
+
+        Page productPage = null;
+        try {
+            productPage = context.newPage();
+
+            log.info("Fetching product from URL: {}", productUrl);
+            productPage.navigate(productUrl);
+            productPage.waitForLoadState(LoadState.NETWORKIDLE);
+            productPage.waitForTimeout(3000);
+
+            String jsCode = "() => {"
+                    + "let name = '';"
+                    + "const nameSelectors = ['h1', 'h2', '[class*=\"product-name\"]', '[class*=\"productName\"]', '[class*=\"title\"]', '[class*=\"Title\"]', '[class*=\"name\"]'];"
+                    + "for (const sel of nameSelectors) {"
+                    + "  const el = document.querySelector(sel);"
+                    + "  if (el && el.textContent.trim().length > 3 && el.textContent.trim().length < 300) {"
+                    + "    name = el.textContent.trim(); break;"
+                    + "  }"
+                    + "}"
+                    + "let price = 0;"
+                    + "const priceSelectors = ['[class*=\"selling\"][class*=\"price\"]', '[class*=\"offer-price\"]', '[class*=\"special-price\"]', '[class*=\"price\"] span', '[class*=\"pdp\"][class*=\"price\"]', '[class*=\"price\"]'];"
+                    + "for (const sel of priceSelectors) {"
+                    + "  const el = document.querySelector(sel);"
+                    + "  if (el) {"
+                    + "    const match = el.textContent.match(/₹\\s*([\\d,]+\\.?\\d*)/);"
+                    + "    if (match) { price = parseFloat(match[1].replace(/,/g, '')); break; }"
+                    + "  }"
+                    + "}"
+                    + "if (price === 0) {"
+                    + "  const allText = document.body.textContent;"
+                    + "  const match = allText.match(/₹\\s*([\\d,]+\\.?\\d*)/);"
+                    + "  if (match) price = parseFloat(match[1].replace(/,/g, ''));"
+                    + "}"
+                    + "let img = '';"
+                    + "const imgEl = document.querySelector('[class*=\"product\"] img[src*=\"http\"], [class*=\"pdp\"] img[src*=\"http\"], img[src*=\"cdn\"]');"
+                    + "if (imgEl) img = imgEl.src || '';"
+                    + "if (!img) { const anyImg = document.querySelector('img[src*=\"http\"]'); if (anyImg) img = anyImg.src; }"
+                    + "let available = true;"
+                    + "const outOfStock = document.querySelector('[class*=\"out-of-stock\"], [class*=\"sold-out\"], [class*=\"unavailable\"]');"
+                    + "if (outOfStock) available = false;"
+                    + "const bodyText = document.body.textContent.toLowerCase();"
+                    + "if (bodyText.includes('out of stock') || bodyText.includes('sold out') || bodyText.includes('currently unavailable')) available = false;"
+                    + "return { name, price, img, available };"
+                    + "}";
+
+            Map<String, Object> data = (Map<String, Object>) productPage.evaluate(jsCode);
+
+            if (data != null) {
+                String name = String.valueOf(data.getOrDefault("name", ""));
+                double price = data.get("price") instanceof Number ? ((Number) data.get("price")).doubleValue() : 0;
+                String imgUrl = String.valueOf(data.getOrDefault("img", ""));
+                boolean available = data.get("available") instanceof Boolean ? (Boolean) data.get("available") : true;
+                String productId = extractProductId(productUrl);
+
+                if (!name.isEmpty()) {
+                    log.info("Fetched product: {} - ₹{}", name, price);
+                    return new ProductResult(productId, name, productUrl, price, imgUrl, available);
+                }
+            }
+
+            log.warn("Could not extract product data from URL: {}", productUrl);
+        } catch (Exception e) {
+            log.error("Failed to fetch product from URL: {}", productUrl, e);
+        } finally {
+            if (productPage != null) {
+                try { productPage.close(); } catch (Exception ignored) {}
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Search for products on JioMart.
      * Uses a dedicated page for search to avoid conflicts with cart/order operations.
      * Extracts product data from the rendered DOM using JavaScript evaluation.

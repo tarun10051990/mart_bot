@@ -34,6 +34,12 @@ public class CartService {
         return botService.searchProducts(session, query, maxResults);
     }
 
+    public ProductResult fetchProductByUrl(Long sessionId, String productUrl) {
+        BotSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new RuntimeException("Session not found: " + sessionId));
+        return botService.fetchProductByUrl(session, productUrl);
+    }
+
     @Transactional
     public CartItem addToCart(Long sessionId, String productUrl, int quantity) {
         BotSession session = sessionRepository.findById(sessionId)
