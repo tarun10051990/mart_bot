@@ -20,11 +20,33 @@
   <!-- Place Order Form -->
   <div class="order-form" *ngIf="showOrderForm">
     <h2>Place COD Order</h2>
+
+    <!-- Fetch Saved Addresses -->
+    <div class="address-section">
+      <button class="btn btn-secondary" (click)="fetchAddresses()" [disabled]="loadingAddresses || !selectedSessionId">
+        {{ loadingAddresses ? 'Fetching...' : 'Fetch Saved Addresses from JioMart' }}
+      </button>
+
+      <div class="saved-addresses" *ngIf="savedAddresses.length > 0">
+        <h3>Saved Addresses</h3>
+        <div class="address-card" *ngFor="let addr of savedAddresses" (click)="useAddress(addr)">
+          <div class="address-type">{{ addr.type || 'Home' }}</div>
+          <div class="address-name" *ngIf="addr.name">{{ addr.name }}</div>
+          <div class="address-text">{{ addr.fullAddress }}</div>
+          <div class="address-meta">
+            <span *ngIf="addr.pincode">Pincode: {{ addr.pincode }}</span>
+            <span *ngIf="addr.phone"> | Phone: {{ addr.phone }}</span>
+          </div>
+          <button class="btn btn-sm">Use This Address</button>
+        </div>
+      </div>
+    </div>
+
     <form (ngSubmit)="placeOrder()">
       <div class="form-group">
         <label>Delivery Address *</label>
         <textarea [(ngModel)]="orderForm.deliveryAddress" name="address" rows="3"
-                  placeholder="Full delivery address" required></textarea>
+                  placeholder="Full delivery address (or fetch from JioMart above)" required></textarea>
       </div>
       <div class="form-group">
         <label>Pincode *</label>

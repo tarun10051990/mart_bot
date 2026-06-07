@@ -17,7 +17,9 @@ export class OrdersComponent implements OnInit {
   orders: Order[] = [];
   showOrderForm = false;
   loading = false;
+  loadingAddresses = false;
   message = '';
+  savedAddresses: any[] = [];
 
   orderForm = {
     deliveryAddress: '',
@@ -33,6 +35,28 @@ export class OrdersComponent implements OnInit {
       }
     });
     this.loadAllOrders();
+  }
+
+  fetchAddresses(): void {
+    if (!this.selectedSessionId) return;
+    this.loadingAddresses = true;
+    this.api.getAddresses(this.selectedSessionId).subscribe({
+      next: res => {
+        this.loadingAddresses = false;
+        if (res.success) {
+          this.savedAddresses = res.data;
+        }
+      },
+      error: () => {
+        this.loadingAddresses = false;
+        this.message = 'Failed to fetch addresses';
+      }
+    });
+  }
+
+  useAddress(address: any): void {
+    this.orderForm.deliveryAddress = address.fullAddress || '';
+    this.orderForm.pincode = address.pincode || '';
   }
 
   loadAllOrders(): void {

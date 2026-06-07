@@ -3,21 +3,25 @@ package com.martbot.controller;
 import com.martbot.dto.BotResponse;
 import com.martbot.dto.SessionCreateRequest;
 import com.martbot.model.BotSession;
+import com.martbot.service.PlaywrightBotService;
 import com.martbot.service.SessionManagerService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/sessions")
 public class SessionController {
 
     private final SessionManagerService sessionManager;
+    private final PlaywrightBotService botService;
 
-    public SessionController(SessionManagerService sessionManager) {
+    public SessionController(SessionManagerService sessionManager, PlaywrightBotService botService) {
         this.sessionManager = sessionManager;
+        this.botService = botService;
     }
 
     @PostMapping
@@ -69,5 +73,15 @@ public class SessionController {
     public ResponseEntity<BotResponse<Void>> deleteSession(@PathVariable Long id) {
         sessionManager.deleteSession(id);
         return ResponseEntity.ok(BotResponse.success("Session deleted"));
+    }
+
+    @GetMapping("/{id}/addresses")
+    public ResponseEntity<BotResponse<List<Map<String, String>>>> getAddresses(@PathVariable Long id) {
+        return sessionManager.getSession(id)
+                .map(session -> {
+                    List<Map<String, String>> addresses = botService.fetchAddresses(session);
+                    return ResponseEntity.ok(BotResponse.success("Addresses retrieved", addresses));
+                })
+                .orElse(ResponseEntity.notFound().build());
     }
 }

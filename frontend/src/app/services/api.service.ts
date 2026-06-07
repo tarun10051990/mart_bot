@@ -48,6 +48,10 @@ export class ApiService {
     return this.http.delete<BotResponse<void>>(`${this.baseUrl}/sessions/${id}`);
   }
 
+  getAddresses(sessionId: number): Observable<BotResponse<any[]>> {
+    return this.http.get<BotResponse<any[]>>(`${this.baseUrl}/sessions/${sessionId}/addresses`);
+  }
+
   // Cart endpoints
   searchProducts(sessionId: number, query: string, maxResults: number = 10): Observable<BotResponse<ProductResult[]>> {
     return this.http.post<BotResponse<ProductResult[]>>(`${this.baseUrl}/cart/search`, {

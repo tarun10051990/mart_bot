@@ -17,7 +17,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class PlaywrightBotService {
@@ -131,8 +130,8 @@ public class PlaywrightBotService {
 
     /**
      * Search for products on JioMart.
-     * Strategy: Intercept Algolia/API network responses for reliable data extraction,
-     * with DOM-based fallback if API interception fails.
+     * Uses a dedicated page for search to avoid conflicts with cart/order operations.
+     * Extracts product data from the rendered DOM using JavaScript evaluation.
      */
     public List<ProductResult> searchProducts(BotSession session, String query, int maxResults) {
         List<ProductResult> results = new ArrayList<>();
@@ -143,66 +142,43 @@ public class PlaywrightBotService {
             return results;
         }
 
+        Page searchPage = null;
         try {
-            Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
-
-            // Intercept API responses containing product data
-            AtomicReference<String> apiResponseBody = new AtomicReference<>(null);
-            page.onResponse(response -> {
-                String url = response.url();
-                // Capture Algolia search responses or JioMart's internal product API
-                if ((url.contains("algolia") || url.contains("/search") || url.contains("/products") || url.contains("/catalog"))
-                        && response.status() == 200
-                        && response.headers().getOrDefault("content-type", "").contains("json")) {
-                    try {
-                        String body = response.text();
-                        if (body.contains("\"hits\"") || body.contains("\"products\"") || body.contains("\"items\"") || body.contains("\"title\"")) {
-                            apiResponseBody.set(body);
-                            log.debug("Captured API response from: {}", url);
-                        }
-                    } catch (Exception ignored) {}
-                }
-            });
+            // Use a dedicated page for search to avoid listener conflicts with other operations
+            searchPage = context.newPage();
 
             String searchUrl = botConfig.getJiomartBaseUrl() + "/search?q=" + query.replace(" ", "+");
             log.info("Navigating to search URL: {}", searchUrl);
-            page.navigate(searchUrl);
-            page.waitForLoadState(LoadState.NETWORKIDLE);
+            searchPage.navigate(searchUrl);
+            searchPage.waitForLoadState(LoadState.NETWORKIDLE);
 
-            // Give extra time for async API calls to complete
-            page.waitForTimeout(3000);
+            // Wait for dynamic content to render
+            searchPage.waitForTimeout(5000);
 
-            // Strategy 1: Parse intercepted API response (most reliable)
-            String responseBody = apiResponseBody.get();
-            if (responseBody != null) {
-                results = parseApiResponse(responseBody, maxResults);
-                if (!results.isEmpty()) {
-                    log.info("Found {} products via API interception for query: {}", results.size(), query);
-                    return results;
-                }
-            }
-
-            // Strategy 2: Use page.evaluate() to extract product data from rendered DOM
-            log.info("API interception yielded no results, trying DOM extraction for query: {}", query);
-            results = extractProductsFromDOM(page, maxResults);
+            // Extract product data from DOM using JavaScript
+            results = extractProductsFromDOM(searchPage, maxResults);
             if (!results.isEmpty()) {
                 log.info("Found {} products via DOM extraction for query: {}", results.size(), query);
                 return results;
             }
 
-            // Strategy 3: Log page content for debugging
-            String pageTitle = page.title();
-            String pageUrl = page.url();
-            log.warn("No products found for query '{}'. Page title: '{}', URL: '{}'", query, pageTitle, pageUrl);
-
-            // Check if the page requires pincode/location setup
-            String pageContent = page.content();
-            if (pageContent.contains("pincode") || pageContent.contains("location") || pageContent.contains("deliver")) {
-                log.warn("Page may require pincode/location to be set. Try setting pincode in JioMart first.");
+            // If DOM extraction fails, try to get data from page's script tags (SSR data)
+            results = extractProductsFromPageData(searchPage, maxResults);
+            if (!results.isEmpty()) {
+                log.info("Found {} products via page data for query: {}", results.size(), query);
+                return results;
             }
+
+            String pageTitle = searchPage.title();
+            String currentUrl = searchPage.url();
+            log.warn("No products found for query '{}'. Page title: '{}', URL: '{}'", query, pageTitle, currentUrl);
 
         } catch (Exception e) {
             log.error("Product search failed for query: {}", query, e);
+        } finally {
+            if (searchPage != null) {
+                try { searchPage.close(); } catch (Exception ignored) {}
+            }
         }
 
         return results;
@@ -270,51 +246,65 @@ public class PlaywrightBotService {
         try {
             String jsCode = "(maxItems) => {"
                     + "const products = [];"
-                    + "const productLinks = document.querySelectorAll('a[href*=\"/p/\"]');"
                     + "const seen = new Set();"
+                    // Strategy A: Find product links containing /p/ in href
+                    + "const productLinks = document.querySelectorAll('a[href*=\"/p/\"], a[href*=\"/product/\"]');"
                     + "for (const link of productLinks) {"
                     + "  const href = link.getAttribute('href');"
-                    + "  if (seen.has(href)) continue;"
+                    + "  if (!href || seen.has(href)) continue;"
                     + "  seen.add(href);"
-                    + "  let card = link.closest('[class*=\"card\"], [class*=\"product\"], [class*=\"item\"], [class*=\"plp\"], li, article') || link.parentElement;"
+                    + "  let card = link.closest('[class*=\"card\"], [class*=\"product\"], [class*=\"item\"], [class*=\"plp\"], [class*=\"listing\"], li, article, div') || link.parentElement;"
+                    // Walk up to find a meaningful container (at least 100px tall or has price info)
+                    + "  let attempts = 0;"
+                    + "  while (card && card.parentElement && attempts < 5) {"
+                    + "    if (card.querySelector('[class*=\"price\"], [class*=\"Price\"], [class*=\"rupee\"], [class*=\"₹\"]')) break;"
+                    + "    if (card.offsetHeight > 100) break;"
+                    + "    card = card.parentElement;"
+                    + "    attempts++;"
+                    + "  }"
                     + "  let name = '';"
-                    + "  const nameEl = card.querySelector('[class*=\"name\"], [class*=\"title\"], h2, h3, h4, [class*=\"Name\"], [class*=\"Title\"]');"
+                    + "  const nameEl = card.querySelector('[class*=\"name\"], [class*=\"title\"], [class*=\"Name\"], [class*=\"Title\"], h2, h3, h4, span[class*=\"line-clamp\"]');"
                     + "  if (nameEl) name = nameEl.textContent.trim();"
-                    + "  if (!name) name = link.textContent.trim().split('\\n')[0].trim();"
-                    + "  if (!name || name.length > 200) continue;"
+                    + "  if (!name) {"
+                    + "    const linkText = link.textContent.trim();"
+                    + "    if (linkText.length > 5 && linkText.length < 200) name = linkText.split('\\n')[0].trim();"
+                    + "  }"
+                    + "  if (!name || name.length > 200 || name.length < 3) continue;"
+                    // Enhanced price extraction
                     + "  let price = 0;"
-                    + "  const priceEl = card.querySelector('[class*=\"price\"], [class*=\"Price\"], [class*=\"amount\"]');"
-                    + "  if (priceEl) {"
-                    + "    const priceMatch = priceEl.textContent.match(/[\\d,]+\\.?\\d*/);"
-                    + "    if (priceMatch) price = parseFloat(priceMatch[0].replace(/,/g, ''));"
+                    + "  const priceSelectors = ["
+                    + "    '[class*=\"selling\"][class*=\"price\"]',"
+                    + "    '[class*=\"offer\"][class*=\"price\"]',"
+                    + "    '[class*=\"special\"][class*=\"price\"]',"
+                    + "    '[class*=\"price\"] span',"
+                    + "    '[class*=\"price\"]',"
+                    + "    '[class*=\"Price\"]',"
+                    + "    '[class*=\"rupee\"]',"
+                    + "    '[class*=\"amount\"]',"
+                    + "    'span[class*=\"jm-heading\"]'"
+                    + "  ];"
+                    + "  for (const sel of priceSelectors) {"
+                    + "    const el = card.querySelector(sel);"
+                    + "    if (el) {"
+                    + "      const text = el.textContent;"
+                    + "      const match = text.match(/₹\\s*([\\d,]+\\.?\\d*)|([\\d,]+\\.?\\d*)/);"
+                    + "      if (match) {"
+                    + "        const val = parseFloat((match[1] || match[2]).replace(/,/g, ''));"
+                    + "        if (val > 0 && val < 100000) { price = val; break; }"
+                    + "      }"
+                    + "    }"
+                    + "  }"
+                    // If still no price, search all text nodes in the card for ₹ pattern
+                    + "  if (price === 0) {"
+                    + "    const allText = card.textContent;"
+                    + "    const rupeeMatch = allText.match(/₹\\s*([\\d,]+\\.?\\d*)/);"
+                    + "    if (rupeeMatch) price = parseFloat(rupeeMatch[1].replace(/,/g, ''));"
                     + "  }"
                     + "  let img = '';"
-                    + "  const imgEl = card.querySelector('img');"
+                    + "  const imgEl = card.querySelector('img[src*=\"http\"], img[data-src*=\"http\"]');"
                     + "  if (imgEl) img = imgEl.src || imgEl.getAttribute('data-src') || '';"
                     + "  products.push({ name, price, url: href, img });"
                     + "  if (products.length >= maxItems) break;"
-                    + "}"
-                    + "if (products.length === 0) {"
-                    + "  const allCards = document.querySelectorAll('[class*=\"card\"], [class*=\"product-item\"], [class*=\"listing\"]');"
-                    + "  for (const card of allCards) {"
-                    + "    const link = card.querySelector('a');"
-                    + "    if (!link) continue;"
-                    + "    let name = '';"
-                    + "    const nameEl = card.querySelector('[class*=\"name\"], [class*=\"title\"], h2, h3, h4');"
-                    + "    if (nameEl) name = nameEl.textContent.trim();"
-                    + "    if (!name || name.length > 200) continue;"
-                    + "    let price = 0;"
-                    + "    const priceEl = card.querySelector('[class*=\"price\"]');"
-                    + "    if (priceEl) {"
-                    + "      const priceMatch = priceEl.textContent.match(/[\\d,]+\\.?\\d*/);"
-                    + "      if (priceMatch) price = parseFloat(priceMatch[0].replace(/,/g, ''));"
-                    + "    }"
-                    + "    let img = '';"
-                    + "    const imgEl = card.querySelector('img');"
-                    + "    if (imgEl) img = imgEl.src || imgEl.getAttribute('data-src') || '';"
-                    + "    products.push({ name, price, url: link.href, img });"
-                    + "    if (products.length >= maxItems) break;"
-                    + "  }"
                     + "}"
                     + "return products;"
                     + "}";
@@ -331,11 +321,97 @@ public class PlaywrightBotService {
                     String imgUrl = String.valueOf(p.getOrDefault("img", ""));
                     String productId = extractProductId(url);
 
+                    if (!url.startsWith("http")) {
+                        url = botConfig.getJiomartBaseUrl() + (url.startsWith("/") ? "" : "/") + url;
+                    }
+
                     results.add(new ProductResult(productId, name, url, price, imgUrl, true));
                 }
             }
         } catch (Exception e) {
             log.debug("DOM extraction failed: {}", e.getMessage());
+        }
+
+        return results;
+    }
+
+    /**
+     * Extract product data from page script tags (SSR/hydration data).
+     */
+    @SuppressWarnings("unchecked")
+    private List<ProductResult> extractProductsFromPageData(Page page, int maxResults) {
+        List<ProductResult> results = new ArrayList<>();
+
+        try {
+            String jsCode = "(maxItems) => {"
+                    + "const products = [];"
+                    // Try __NEXT_DATA__ (Next.js)
+                    + "const nextData = document.querySelector('#__NEXT_DATA__');"
+                    + "if (nextData) {"
+                    + "  try {"
+                    + "    const data = JSON.parse(nextData.textContent);"
+                    + "    const findProducts = (obj) => {"
+                    + "      if (!obj || typeof obj !== 'object') return [];"
+                    + "      if (Array.isArray(obj)) return obj.flatMap(findProducts);"
+                    + "      if (obj.title && (obj.price || obj.selling_price)) return [obj];"
+                    + "      return Object.values(obj).flatMap(findProducts);"
+                    + "    };"
+                    + "    const items = findProducts(data);"
+                    + "    for (const item of items.slice(0, maxItems)) {"
+                    + "      products.push({"
+                    + "        name: item.title || item.name || '',"
+                    + "        price: item.selling_price || item.price || item.effective_price || 0,"
+                    + "        url: item.url || item.slug || item.product_url || '',"
+                    + "        img: item.image || item.thumbnail || ''"
+                    + "      });"
+                    + "    }"
+                    + "  } catch(e) {}"
+                    + "}"
+                    // Try window.__PRELOADED_STATE__ or similar
+                    + "if (products.length === 0 && window.__PRELOADED_STATE__) {"
+                    + "  try {"
+                    + "    const state = window.__PRELOADED_STATE__;"
+                    + "    const findProducts = (obj) => {"
+                    + "      if (!obj || typeof obj !== 'object') return [];"
+                    + "      if (Array.isArray(obj)) return obj.flatMap(findProducts);"
+                    + "      if (obj.title && (obj.price || obj.selling_price)) return [obj];"
+                    + "      return Object.values(obj).flatMap(findProducts);"
+                    + "    };"
+                    + "    const items = findProducts(state);"
+                    + "    for (const item of items.slice(0, maxItems)) {"
+                    + "      products.push({"
+                    + "        name: item.title || item.name || '',"
+                    + "        price: item.selling_price || item.price || 0,"
+                    + "        url: item.url || item.slug || '',"
+                    + "        img: item.image || item.thumbnail || ''"
+                    + "      });"
+                    + "    }"
+                    + "  } catch(e) {}"
+                    + "}"
+                    + "return products;"
+                    + "}";
+
+            List<Map<String, Object>> products = (List<Map<String, Object>>) page.evaluate(jsCode, maxResults);
+
+            if (products != null) {
+                for (Map<String, Object> p : products) {
+                    String name = String.valueOf(p.getOrDefault("name", ""));
+                    if (name.isEmpty()) continue;
+
+                    double price = p.get("price") instanceof Number ? ((Number) p.get("price")).doubleValue() : 0;
+                    String url = String.valueOf(p.getOrDefault("url", ""));
+                    String imgUrl = String.valueOf(p.getOrDefault("img", ""));
+                    String productId = extractProductId(url);
+
+                    if (!url.startsWith("http") && !url.isEmpty()) {
+                        url = botConfig.getJiomartBaseUrl() + (url.startsWith("/") ? "" : "/") + url;
+                    }
+
+                    results.add(new ProductResult(productId, name, url, price, imgUrl, true));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Page data extraction failed: {}", e.getMessage());
         }
 
         return results;
@@ -377,33 +453,75 @@ public class PlaywrightBotService {
             return false;
         }
 
+        Page cartPage = null;
         try {
-            Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
+            // Use a fresh page to avoid stale object issues
+            cartPage = context.newPage();
 
-            page.navigate(productUrl);
-            page.waitForLoadState(LoadState.NETWORKIDLE);
+            cartPage.navigate(productUrl);
+            cartPage.waitForLoadState(LoadState.NETWORKIDLE);
+            cartPage.waitForTimeout(2000);
 
             // Set quantity if greater than 1
             if (quantity > 1) {
-                var quantityInput = page.locator("input[type='number'], .quantity-input, [data-testid='quantity-input']").first();
-                if (quantityInput.isVisible()) {
-                    quantityInput.fill(String.valueOf(quantity));
+                try {
+                    var quantityInput = cartPage.locator("input[type='number'], .quantity-input, [data-testid='quantity-input']").first();
+                    if (quantityInput.isVisible()) {
+                        quantityInput.fill(String.valueOf(quantity));
+                    }
+                } catch (Exception e) {
+                    log.debug("Quantity input not found, using default quantity");
                 }
             }
 
-            // Click Add to Cart button
-            page.locator("button:has-text('Add to Cart'), button:has-text('ADD TO CART'), [data-testid='add-to-cart']")
-                    .first()
-                    .click(new Locator.ClickOptions().setTimeout(10000));
+            // Click Add to Cart button - try multiple selectors
+            boolean added = false;
+            String[] addToCartSelectors = {
+                    "button:has-text('Add to Cart')",
+                    "button:has-text('ADD TO CART')",
+                    "button:has-text('Add to Basket')",
+                    "button:has-text('ADD TO BASKET')",
+                    "[data-testid='add-to-cart']",
+                    "button[class*='add-to-cart']",
+                    "button[class*='addToCart']",
+                    "button[class*='add_to_cart']"
+            };
 
-            // Wait for cart update confirmation
-            page.waitForTimeout(2000);
+            for (String selector : addToCartSelectors) {
+                try {
+                    var btn = cartPage.locator(selector).first();
+                    if (btn.isVisible()) {
+                        btn.click(new Locator.ClickOptions().setTimeout(5000));
+                        added = true;
+                        break;
+                    }
+                } catch (Exception ignored) {}
+            }
 
-            log.info("Product added to cart: {}", productUrl);
-            return true;
+            if (!added) {
+                // Last resort: click any button that looks like "Add" near the price
+                try {
+                    cartPage.locator("button:has-text('Add')").first()
+                            .click(new Locator.ClickOptions().setTimeout(5000));
+                    added = true;
+                } catch (Exception e) {
+                    log.warn("Could not find Add to Cart button on: {}", productUrl);
+                }
+            }
+
+            if (added) {
+                cartPage.waitForTimeout(2000);
+                log.info("Product added to cart: {}", productUrl);
+            }
+
+            return added;
         } catch (Exception e) {
             log.error("Failed to add product to cart: {}", productUrl, e);
             return false;
+        } finally {
+            if (cartPage != null) {
+                try { cartPage.close(); } catch (Exception ignored) {}
+            }
         }
     }
 
@@ -491,6 +609,88 @@ public class PlaywrightBotService {
         }
 
         return result;
+    }
+
+    /**
+     * Fetch saved addresses from JioMart account.
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, String>> fetchAddresses(BotSession session) {
+        List<Map<String, String>> addresses = new ArrayList<>();
+        BrowserContext context = activeSessions.get(session.getId());
+
+        if (context == null) {
+            log.error("No active session found for session ID: {}", session.getId());
+            return addresses;
+        }
+
+        Page addressPage = null;
+        try {
+            addressPage = context.newPage();
+
+            // Navigate to the address management page
+            addressPage.navigate(botConfig.getJiomartBaseUrl() + "/profile/addresses");
+            addressPage.waitForLoadState(LoadState.NETWORKIDLE);
+            addressPage.waitForTimeout(3000);
+
+            // Extract addresses from the page using JavaScript
+            String jsCode = "() => {"
+                    + "const addresses = [];"
+                    + "const addressCards = document.querySelectorAll('[class*=\"address\"], [class*=\"Address\"], [data-testid*=\"address\"]');"
+                    + "for (const card of addressCards) {"
+                    + "  const text = card.textContent.trim();"
+                    + "  if (text.length < 10) continue;"
+                    // Skip cards that are just buttons like "Add New Address"
+                    + "  if (text.toLowerCase().includes('add new') && text.length < 30) continue;"
+                    + "  let name = '';"
+                    + "  const nameEl = card.querySelector('[class*=\"name\"], [class*=\"Name\"], strong, b');"
+                    + "  if (nameEl) name = nameEl.textContent.trim();"
+                    + "  let phone = '';"
+                    + "  const phoneMatch = text.match(/(\\+91|91)?\\s*[6-9]\\d{9}/);"
+                    + "  if (phoneMatch) phone = phoneMatch[0].trim();"
+                    + "  let pincode = '';"
+                    + "  const pincodeMatch = text.match(/\\b[1-9]\\d{5}\\b/);"
+                    + "  if (pincodeMatch) pincode = pincodeMatch[0];"
+                    + "  let type = 'Home';"
+                    + "  if (text.toLowerCase().includes('office') || text.toLowerCase().includes('work')) type = 'Office';"
+                    + "  let fullAddress = text.replace(name, '').replace(phone, '').trim();"
+                    + "  fullAddress = fullAddress.replace(/\\s+/g, ' ').trim();"
+                    + "  if (fullAddress.length < 5) continue;"
+                    + "  addresses.push({ name, phone, pincode, type, fullAddress });"
+                    + "}"
+                    // Fallback: if no address cards found, try to get from visible text blocks
+                    + "if (addresses.length === 0) {"
+                    + "  const allDivs = document.querySelectorAll('div, li, section');"
+                    + "  for (const div of allDivs) {"
+                    + "    const text = div.textContent.trim();"
+                    + "    const pincodeMatch = text.match(/\\b[1-9]\\d{5}\\b/);"
+                    + "    if (pincodeMatch && text.length > 20 && text.length < 500) {"
+                    + "      const existing = addresses.find(a => a.fullAddress === text);"
+                    + "      if (!existing) {"
+                    + "        addresses.push({ name: '', phone: '', pincode: pincodeMatch[0], type: 'Home', fullAddress: text });"
+                    + "      }"
+                    + "    }"
+                    + "    if (addresses.length >= 10) break;"
+                    + "  }"
+                    + "}"
+                    + "return addresses;"
+                    + "}";
+
+            List<Map<String, String>> result = (List<Map<String, String>>) addressPage.evaluate(jsCode);
+            if (result != null) {
+                addresses.addAll(result);
+            }
+
+            log.info("Found {} addresses for session: {}", addresses.size(), session.getId());
+        } catch (Exception e) {
+            log.error("Failed to fetch addresses for session: {}", session.getId(), e);
+        } finally {
+            if (addressPage != null) {
+                try { addressPage.close(); } catch (Exception ignored) {}
+            }
+        }
+
+        return addresses;
     }
 
     /**
