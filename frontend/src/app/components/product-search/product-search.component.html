@@ -1,0 +1,36 @@
+<div class="search-page">
+  <h1>Product Search</h1>
+
+  <div class="message" *ngIf="message">{{ message }}</div>
+
+  <div class="search-bar">
+    <select [(ngModel)]="selectedSessionId" class="session-select">
+      <option [ngValue]="null" disabled>Select a session</option>
+      <option *ngFor="let s of sessions" [ngValue]="s.id">{{ s.sessionName }}</option>
+    </select>
+    <input type="text" [(ngModel)]="searchQuery" placeholder="Search products..."
+           (keyup.enter)="search()">
+    <button class="btn btn-primary" (click)="search()" [disabled]="loading || !selectedSessionId">
+      {{ loading ? 'Searching...' : 'Search' }}
+    </button>
+  </div>
+
+  <div class="product-grid" *ngIf="products.length > 0">
+    <div class="product-card" *ngFor="let product of products">
+      <img [src]="product.imageUrl" [alt]="product.name" *ngIf="product.imageUrl">
+      <div class="product-info">
+        <h3>{{ product.name }}</h3>
+        <p class="price">₹{{ product.price }}</p>
+        <span class="availability" [class.available]="product.available">
+          {{ product.available ? 'Available' : 'Out of Stock' }}
+        </span>
+      </div>
+      <button class="btn btn-primary btn-sm" (click)="addToCart(product)"
+              [disabled]="!product.available">Add to Cart</button>
+    </div>
+  </div>
+
+  <div class="empty-state" *ngIf="products.length === 0 && !loading">
+    <p>Search for products to get started</p>
+  </div>
+</div>

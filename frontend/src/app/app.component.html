@@ -1,0 +1,161 @@
+<div class="app">
+  <header class="header">
+    <h1>MartBot</h1>
+    <span class="subtitle">JioMart Automation</span>
+  </header>
+
+  <div class="main-content">
+    <!-- STEP 1: Login / Session -->
+    <section class="section">
+      <h2 class="section-title">1. Session</h2>
+
+      <!-- Existing sessions -->
+      <div class="existing-sessions" *ngIf="sessions.length > 0">
+        <label>Select existing session:</label>
+        <div class="session-chips">
+          <button *ngFor="let s of sessions"
+                  class="chip"
+                  [class.active]="selectedSessionId === s.id"
+                  (click)="selectSession(s.id)">
+            {{ s.sessionName }} <span class="chip-status" [class]="s.status.toLowerCase()">{{ s.status }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Create new session -->
+      <details class="create-session" [open]="sessions.length === 0">
+        <summary>Create New Session</summary>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Session Name *</label>
+            <input type="text" [(ngModel)]="sessionForm.sessionName" placeholder="e.g. My Account">
+          </div>
+          <div class="form-group">
+            <label>CRA Access Token *</label>
+            <input type="text" [(ngModel)]="sessionForm.craAccessToken" placeholder="cra_access_token value">
+          </div>
+          <div class="form-group">
+            <label>CRA Refresh Token</label>
+            <input type="text" [(ngModel)]="sessionForm.craRefreshToken" placeholder="cra_refresh_token value">
+          </div>
+          <div class="form-group">
+            <label>_ga</label>
+            <input type="text" [(ngModel)]="sessionForm.ga" placeholder="_ga cookie value">
+          </div>
+          <div class="form-group">
+            <label>_ga_XGZ513W4JV</label>
+            <input type="text" [(ngModel)]="sessionForm.gaXgz" placeholder="_ga_XGZ513W4JV value">
+          </div>
+        </div>
+        <button class="btn btn-primary" (click)="createSession()" [disabled]="creatingSession">
+          {{ creatingSession ? 'Logging in...' : 'Login & Create Session' }}
+        </button>
+        <div class="message" *ngIf="sessionMessage" [class.error]="sessionMessage.includes('Failed') || sessionMessage.includes('Error')">
+          {{ sessionMessage }}
+        </div>
+      </details>
+    </section>
+
+    <!-- STEP 2: Add Products by URL -->
+    <section class="section" *ngIf="selectedSessionId">
+      <h2 class="section-title">2. Add Products</h2>
+      <p class="section-desc">Paste JioMart product URLs to add them to your order.</p>
+
+      <div class="product-input-row">
+        <input type="text" [(ngModel)]="productUrl"
+               placeholder="https://www.jiomart.com/product-name-here/..."
+               class="product-url-input"
+               (keydown.enter)="fetchProduct()">
+        <button class="btn btn-primary" (click)="fetchProduct()" [disabled]="fetchingProduct || !productUrl">
+          {{ fetchingProduct ? 'Fetching...' : 'Add Product' }}
+        </button>
+      </div>
+      <div class="message" *ngIf="productMessage" [class.error]="productMessage.includes('Error') || productMessage.includes('Could not')">
+        {{ productMessage }}
+      </div>
+
+      <!-- Cart Table -->
+      <div class="cart-table" *ngIf="cart.length > 0">
+        <table>
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Price</th>
+              <th>Qty</th>
+              <th>Subtotal</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let item of cart; let i = index">
+              <td class="product-name-cell">
+                <a [href]="item.url" target="_blank">{{ item.name }}</a>
+                <span class="out-of-stock" *ngIf="!item.available">Out of Stock</span>
+              </td>
+              <td>₹{{ item.price }}</td>
+              <td>
+                <input type="number" [(ngModel)]="item.quantity" min="1" max="99" class="qty-input">
+              </td>
+              <td>₹{{ item.price * item.quantity }}</td>
+              <td>
+                <button class="btn-remove" (click)="removeFromCart(i)">✕</button>
+              </td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="3"><strong>Total</strong></td>
+              <td><strong>₹{{ getCartTotal() }}</strong></td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>
+
+    <!-- STEP 3: Select Delivery Address -->
+    <section class="section" *ngIf="selectedSessionId && cart.length > 0">
+      <h2 class="section-title">3. Delivery Address</h2>
+
+      <button class="btn btn-secondary" (click)="fetchAddresses()" [disabled]="fetchingAddresses">
+        {{ fetchingAddresses ? 'Fetching...' : 'Fetch Addresses from JioMart' }}
+      </button>
+      <div class="message" *ngIf="addressMessage">{{ addressMessage }}</div>
+
+      <div class="address-grid" *ngIf="addresses.length > 0">
+        <div *ngFor="let addr of addresses"
+             class="address-card"
+             [class.selected]="selectedAddress === addr"
+             (click)="selectAddress(addr)">
+          <div class="addr-type">{{ addr.type || 'Home' }}</div>
+          <div class="addr-name" *ngIf="addr.name">{{ addr.name }}</div>
+          <div class="addr-text">{{ addr.fullAddress }}</div>
+          <div class="addr-meta">
+            <span *ngIf="addr.pincode">{{ addr.pincode }}</span>
+            <span *ngIf="addr.phone"> · {{ addr.phone }}</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 4: Place Order -->
+    <section class="section" *ngIf="selectedSessionId && cart.length > 0 && selectedAddress">
+      <h2 class="section-title">4. Place Order (COD)</h2>
+
+      <div class="order-summary">
+        <p><strong>{{ cart.length }}</strong> product(s) · Total: <strong>₹{{ getCartTotal() }}</strong></p>
+        <p>Deliver to: <strong>{{ selectedAddress.fullAddress }}</strong></p>
+        <p>Payment: <strong>Cash on Delivery</strong></p>
+      </div>
+
+      <button class="btn btn-success" (click)="placeOrder()" [disabled]="placingOrder">
+        {{ placingOrder ? 'Placing Order...' : 'Place Order (COD)' }}
+      </button>
+      <div class="message" *ngIf="orderMessage"
+           [class.error]="orderMessage.includes('failed') || orderMessage.includes('error') || orderMessage.includes('Error')"
+           [class.success]="orderMessage.includes('successfully')">
+        {{ orderMessage }}
+      </div>
+    </section>
+  </div>
+</div>

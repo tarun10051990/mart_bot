@@ -1,0 +1,93 @@
+<div class="orders-page">
+  <div class="page-header">
+    <h1>Orders (COD)</h1>
+    <button class="btn btn-primary" (click)="showOrderForm = !showOrderForm" [disabled]="!selectedSessionId">
+      {{ showOrderForm ? 'Cancel' : '+ Place Order (COD)' }}
+    </button>
+  </div>
+
+  <div class="message" *ngIf="message" [class.error]="message.includes('failed') || message.includes('error')">
+    {{ message }}
+  </div>
+
+  <div class="session-select-bar">
+    <select [(ngModel)]="selectedSessionId" (ngModelChange)="loadSessionOrders()" class="session-select">
+      <option [ngValue]="null">All Sessions</option>
+      <option *ngFor="let s of sessions" [ngValue]="s.id">{{ s.sessionName }}</option>
+    </select>
+  </div>
+
+  <!-- Place Order Form -->
+  <div class="order-form" *ngIf="showOrderForm">
+    <h2>Place COD Order</h2>
+
+    <!-- Fetch Saved Addresses -->
+    <div class="address-section">
+      <button class="btn btn-secondary" (click)="fetchAddresses()" [disabled]="loadingAddresses || !selectedSessionId">
+        {{ loadingAddresses ? 'Fetching...' : 'Fetch Saved Addresses from JioMart' }}
+      </button>
+
+      <div class="saved-addresses" *ngIf="savedAddresses.length > 0">
+        <h3>Saved Addresses</h3>
+        <div class="address-card" *ngFor="let addr of savedAddresses" (click)="useAddress(addr)">
+          <div class="address-type">{{ addr.type || 'Home' }}</div>
+          <div class="address-name" *ngIf="addr.name">{{ addr.name }}</div>
+          <div class="address-text">{{ addr.fullAddress }}</div>
+          <div class="address-meta">
+            <span *ngIf="addr.pincode">Pincode: {{ addr.pincode }}</span>
+            <span *ngIf="addr.phone"> | Phone: {{ addr.phone }}</span>
+          </div>
+          <button class="btn btn-sm">Use This Address</button>
+        </div>
+      </div>
+    </div>
+
+    <form (ngSubmit)="placeOrder()">
+      <div class="form-group">
+        <label>Delivery Address *</label>
+        <textarea [(ngModel)]="orderForm.deliveryAddress" name="address" rows="3"
+                  placeholder="Full delivery address (or fetch from JioMart above)" required></textarea>
+      </div>
+      <div class="form-group">
+        <label>Pincode *</label>
+        <input type="text" [(ngModel)]="orderForm.pincode" name="pincode"
+               placeholder="6-digit pincode" required maxlength="6">
+      </div>
+      <button type="submit" class="btn btn-primary" [disabled]="loading">
+        {{ loading ? 'Placing Order...' : 'Place Order (COD)' }}
+      </button>
+    </form>
+  </div>
+
+  <!-- Orders List -->
+  <div class="orders-list">
+    <table *ngIf="orders.length > 0">
+      <thead>
+        <tr>
+          <th>Order ID</th>
+          <th>Status</th>
+          <th>Address</th>
+          <th>Pincode</th>
+          <th>Amount</th>
+          <th>Payment</th>
+          <th>Placed At</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let order of orders">
+          <td>{{ order.orderId || '-' }}</td>
+          <td><span class="status-badge" [class]="order.status.toLowerCase()">{{ order.status }}</span></td>
+          <td class="address-cell">{{ order.deliveryAddress }}</td>
+          <td>{{ order.pincode }}</td>
+          <td>{{ order.totalAmount > 0 ? '₹' + order.totalAmount : '-' }}</td>
+          <td>{{ order.paymentMethod }}</td>
+          <td>{{ order.placedAt | date:'short' }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="empty-state" *ngIf="orders.length === 0">
+      <p>No orders yet</p>
+    </div>
+  </div>
+</div>

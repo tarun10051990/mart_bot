@@ -1,0 +1,26 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: mart-bot
+  datasource:
+    url: jdbc:h2:file:./data/martbot
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: password
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    database-platform: org.hibernate.dialect.H2Dialect
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+bot:
+  login-url: "https://account.relianceretail.com/login/?client_id=fdb646ea-e708-4725-a953-228fa1cb8355&return_ui_url=www.jiomart.com/ext/retail-auth/ui/session?return_callback=https%3A//www.jiomart.com/auth/login%3FredirectUrl%3D/profile%26cl%3Dtrue%26application_id%3D685945f46c8c7aee3f3af605"
+  jiomart-base-url: "https://www.jiomart.com"
+  headless: true
+  timeout-ms: 30000
