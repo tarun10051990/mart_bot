@@ -73,4 +73,14 @@ public class CartController {
         cartService.clearCart(sessionId);
         return ResponseEntity.ok(BotResponse.success("Cart cleared"));
     }
+
+    @PostMapping("/clear-jiomart/{sessionId}")
+    public ResponseEntity<BotResponse<Boolean>> clearJioMartCart(@PathVariable Long sessionId) {
+        try {
+            boolean result = cartService.clearJioMartCart(sessionId);
+            return ResponseEntity.ok(BotResponse.success("JioMart cart cleared", result));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(BotResponse.error("Failed to clear JioMart cart: " + e.getMessage()));
+        }
+    }
 }

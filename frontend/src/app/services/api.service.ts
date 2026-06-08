@@ -79,6 +79,10 @@ export class ApiService {
     return this.http.delete<BotResponse<void>>(`${this.baseUrl}/cart/clear/${sessionId}`);
   }
 
+  clearJioMartCart(sessionId: number): Observable<BotResponse<boolean>> {
+    return this.http.post<BotResponse<boolean>>(`${this.baseUrl}/cart/clear-jiomart/${sessionId}`, {});
+  }
+
   // Order endpoints
   placeOrderCOD(sessionId: number, deliveryAddress: string, pincode: string): Observable<BotResponse<Order>> {
     return this.http.post<BotResponse<Order>>(`${this.baseUrl}/orders/cod`, {

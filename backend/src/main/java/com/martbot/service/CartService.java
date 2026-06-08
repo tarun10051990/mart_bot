@@ -73,6 +73,12 @@ public class CartService {
         log.info("Cart cleared for session: {}", sessionId);
     }
 
+    public boolean clearJioMartCart(Long sessionId) {
+        BotSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new RuntimeException("Session not found: " + sessionId));
+        return botService.clearJioMartCart(session);
+    }
+
     private String extractProductId(String url) {
         if (url == null) return "unknown";
         String[] parts = url.split("/");

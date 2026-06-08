@@ -147,19 +147,41 @@ public class PlaywrightBotService {
             log.info("Fetching product from URL: {}", productUrl);
             productPage.navigate(productUrl);
             productPage.waitForLoadState(LoadState.NETWORKIDLE);
-            productPage.waitForTimeout(3000);
+            productPage.waitForTimeout(2000);
+
+            // Dismiss any location/popup overlays first
+            dismissPopups(productPage);
+            productPage.waitForTimeout(1000);
 
             String jsCode = "() => {"
+                    // Filter function to skip irrelevant text
+                    + "const isGarbage = (t) => {"
+                    + "  const lower = t.toLowerCase();"
+                    + "  return lower.includes('enable location') || lower.includes('location service') || "
+                    + "    lower.includes('allow location') || lower.includes('detect my location') || "
+                    + "    lower.includes('use current location') || lower.includes('enter pincode') || "
+                    + "    lower.length < 4 || lower.length > 300;"
+                    + "};"
                     + "let name = '';"
-                    + "const nameSelectors = ['h1', 'h2', '[class*=\"product-name\"]', '[class*=\"productName\"]', '[class*=\"title\"]', '[class*=\"Title\"]', '[class*=\"name\"]'];"
+                    + "const nameSelectors = ['h1', '[class*=\"product-name\"]', '[class*=\"productName\"]', '[class*=\"pdp\"][class*=\"name\"]', '[class*=\"pdp\"][class*=\"title\"]'];"
                     + "for (const sel of nameSelectors) {"
                     + "  const el = document.querySelector(sel);"
-                    + "  if (el && el.textContent.trim().length > 3 && el.textContent.trim().length < 300) {"
-                    + "    name = el.textContent.trim(); break;"
+                    + "  if (el) {"
+                    + "    const text = el.textContent.trim();"
+                    + "    if (!isGarbage(text)) { name = text; break; }"
                     + "  }"
                     + "}"
+                    // Fallback: try meta title tag
+                    + "if (!name) {"
+                    + "  const metaTitle = document.querySelector('meta[property=\"og:title\"]');"
+                    + "  if (metaTitle) name = metaTitle.getAttribute('content') || '';"
+                    + "}"
+                    + "if (!name) {"
+                    + "  const titleTag = document.title;"
+                    + "  if (titleTag && !isGarbage(titleTag)) name = titleTag.split('|')[0].split('-')[0].trim();"
+                    + "}"
                     + "let price = 0;"
-                    + "const priceSelectors = ['[class*=\"selling\"][class*=\"price\"]', '[class*=\"offer-price\"]', '[class*=\"special-price\"]', '[class*=\"price\"] span', '[class*=\"pdp\"][class*=\"price\"]', '[class*=\"price\"]'];"
+                    + "const priceSelectors = ['[class*=\"selling\"][class*=\"price\"]', '[class*=\"offer-price\"]', '[class*=\"special-price\"]', '[class*=\"pdp\"][class*=\"price\"]', '[class*=\"price\"] span', '[class*=\"price\"]'];"
                     + "for (const sel of priceSelectors) {"
                     + "  const el = document.querySelector(sel);"
                     + "  if (el) {"
@@ -168,19 +190,19 @@ public class PlaywrightBotService {
                     + "  }"
                     + "}"
                     + "if (price === 0) {"
-                    + "  const allText = document.body.textContent;"
-                    + "  const match = allText.match(/₹\\s*([\\d,]+\\.?\\d*)/);"
-                    + "  if (match) price = parseFloat(match[1].replace(/,/g, ''));"
+                    + "  const metaPrice = document.querySelector('meta[property=\"product:price:amount\"]');"
+                    + "  if (metaPrice) price = parseFloat(metaPrice.getAttribute('content') || '0');"
                     + "}"
                     + "let img = '';"
-                    + "const imgEl = document.querySelector('[class*=\"product\"] img[src*=\"http\"], [class*=\"pdp\"] img[src*=\"http\"], img[src*=\"cdn\"]');"
-                    + "if (imgEl) img = imgEl.src || '';"
-                    + "if (!img) { const anyImg = document.querySelector('img[src*=\"http\"]'); if (anyImg) img = anyImg.src; }"
+                    + "const metaImg = document.querySelector('meta[property=\"og:image\"]');"
+                    + "if (metaImg) img = metaImg.getAttribute('content') || '';"
+                    + "if (!img) {"
+                    + "  const imgEl = document.querySelector('[class*=\"product\"] img[src*=\"http\"], [class*=\"pdp\"] img[src*=\"http\"], img[src*=\"cdn\"]');"
+                    + "  if (imgEl) img = imgEl.src || '';"
+                    + "}"
                     + "let available = true;"
                     + "const outOfStock = document.querySelector('[class*=\"out-of-stock\"], [class*=\"sold-out\"], [class*=\"unavailable\"]');"
                     + "if (outOfStock) available = false;"
-                    + "const bodyText = document.body.textContent.toLowerCase();"
-                    + "if (bodyText.includes('out of stock') || bodyText.includes('sold out') || bodyText.includes('currently unavailable')) available = false;"
                     + "return { name, price, img, available };"
                     + "}";
 
@@ -545,6 +567,10 @@ public class PlaywrightBotService {
             cartPage.waitForLoadState(LoadState.NETWORKIDLE);
             cartPage.waitForTimeout(2000);
 
+            // Dismiss popups before interacting
+            dismissPopups(cartPage);
+            cartPage.waitForTimeout(500);
+
             // Set quantity if greater than 1
             if (quantity > 1) {
                 try {
@@ -711,47 +737,75 @@ public class PlaywrightBotService {
         try {
             addressPage = context.newPage();
 
-            // Navigate to the address management page
-            addressPage.navigate(botConfig.getJiomartBaseUrl() + "/profile/addresses");
+            // Navigate to JioMart address management page (try multiple URLs)
+            log.info("Fetching addresses from JioMart for session: {}", session.getId());
+            addressPage.navigate(botConfig.getJiomartBaseUrl() + "/myaccount/myaddresses");
             addressPage.waitForLoadState(LoadState.NETWORKIDLE);
-            addressPage.waitForTimeout(3000);
+            addressPage.waitForTimeout(2000);
+
+            // Dismiss any location popups
+            dismissPopups(addressPage);
+            addressPage.waitForTimeout(1000);
+
+            // Check if page redirected or shows login prompt; try alternate URL
+            String currentUrl = addressPage.url();
+            if (currentUrl.contains("login") || currentUrl.contains("auth")) {
+                log.info("Address page redirected to login, trying alternate URL...");
+                addressPage.navigate(botConfig.getJiomartBaseUrl() + "/account/addresses");
+                addressPage.waitForLoadState(LoadState.NETWORKIDLE);
+                addressPage.waitForTimeout(2000);
+                dismissPopups(addressPage);
+            }
 
             // Extract addresses from the page using JavaScript
             String jsCode = "() => {"
                     + "const addresses = [];"
-                    + "const addressCards = document.querySelectorAll('[class*=\"address\"], [class*=\"Address\"], [data-testid*=\"address\"]');"
+                    + "const seenTexts = new Set();"
+                    // Look for address cards/containers
+                    + "const addressCards = document.querySelectorAll("
+                    + "  '[class*=\"address-card\"], [class*=\"addressCard\"], "
+                    + "  '[class*=\"address-item\"], [class*=\"savedAddress\"], "
+                    + "  '[class*=\"addr-card\"], [class*=\"my-address\"], "
+                    + "  '[class*=\"address_card\"], [class*=\"delivery-address\"]'"
+                    + ");"
                     + "for (const card of addressCards) {"
                     + "  const text = card.textContent.trim();"
-                    + "  if (text.length < 10) continue;"
-                    // Skip cards that are just buttons like "Add New Address"
-                    + "  if (text.toLowerCase().includes('add new') && text.length < 30) continue;"
+                    + "  if (text.length < 15 || seenTexts.has(text)) continue;"
+                    + "  const lower = text.toLowerCase();"
+                    + "  if (lower.includes('add new') && text.length < 40) continue;"
+                    + "  if (lower.includes('enable location') || lower.includes('detect my location')) continue;"
+                    + "  seenTexts.add(text);"
                     + "  let name = '';"
-                    + "  const nameEl = card.querySelector('[class*=\"name\"], [class*=\"Name\"], strong, b');"
+                    + "  const nameEl = card.querySelector('[class*=\"name\"], [class*=\"Name\"], strong, b, h3, h4');"
                     + "  if (nameEl) name = nameEl.textContent.trim();"
                     + "  let phone = '';"
-                    + "  const phoneMatch = text.match(/(\\+91|91)?\\s*[6-9]\\d{9}/);"
+                    + "  const phoneMatch = text.match(/(\\+91[\\s-]?|91[\\s-]?)?[6-9]\\d{9}/);"
                     + "  if (phoneMatch) phone = phoneMatch[0].trim();"
                     + "  let pincode = '';"
                     + "  const pincodeMatch = text.match(/\\b[1-9]\\d{5}\\b/);"
                     + "  if (pincodeMatch) pincode = pincodeMatch[0];"
                     + "  let type = 'Home';"
-                    + "  if (text.toLowerCase().includes('office') || text.toLowerCase().includes('work')) type = 'Office';"
-                    + "  let fullAddress = text.replace(name, '').replace(phone, '').trim();"
-                    + "  fullAddress = fullAddress.replace(/\\s+/g, ' ').trim();"
-                    + "  if (fullAddress.length < 5) continue;"
+                    + "  if (lower.includes('office') || lower.includes('work')) type = 'Office';"
+                    + "  let fullAddress = text.replace(/\\s+/g, ' ').trim();"
+                    + "  if (fullAddress.length < 10) continue;"
                     + "  addresses.push({ name, phone, pincode, type, fullAddress });"
                     + "}"
-                    // Fallback: if no address cards found, try to get from visible text blocks
+                    // Fallback: look for elements with pincode pattern
                     + "if (addresses.length === 0) {"
-                    + "  const allDivs = document.querySelectorAll('div, li, section');"
-                    + "  for (const div of allDivs) {"
-                    + "    const text = div.textContent.trim();"
+                    + "  const allElements = document.querySelectorAll('div, li, section, p');"
+                    + "  for (const el of allElements) {"
+                    + "    if (el.children.length > 5) continue;"
+                    + "    const text = el.textContent.trim();"
+                    + "    if (text.length < 20 || text.length > 500) continue;"
+                    + "    const lower = text.toLowerCase();"
+                    + "    if (lower.includes('enable location') || lower.includes('detect my location')) continue;"
                     + "    const pincodeMatch = text.match(/\\b[1-9]\\d{5}\\b/);"
-                    + "    if (pincodeMatch && text.length > 20 && text.length < 500) {"
-                    + "      const existing = addresses.find(a => a.fullAddress === text);"
-                    + "      if (!existing) {"
-                    + "        addresses.push({ name: '', phone: '', pincode: pincodeMatch[0], type: 'Home', fullAddress: text });"
-                    + "      }"
+                    + "    if (pincodeMatch && !seenTexts.has(text)) {"
+                    + "      seenTexts.add(text);"
+                    + "      let phone = '';"
+                    + "      const phoneMatch = text.match(/(\\+91[\\s-]?|91[\\s-]?)?[6-9]\\d{9}/);"
+                    + "      if (phoneMatch) phone = phoneMatch[0].trim();"
+                    + "      addresses.push({ name: '', phone, pincode: pincodeMatch[0], type: 'Home', fullAddress: text.replace(/\\s+/g, ' ').trim() });"
                     + "    }"
                     + "    if (addresses.length >= 10) break;"
                     + "  }"
@@ -832,6 +886,102 @@ public class PlaywrightBotService {
         }
 
         return cookies;
+    }
+
+    /**
+     * Dismiss location/popup overlays that block content on JioMart pages.
+     */
+    private void dismissPopups(Page page) {
+        try {
+            // Try to close location services popup
+            String dismissJs = "() => {"
+                    + "const closeButtons = document.querySelectorAll("
+                    + "  '[class*=\"close\"], [class*=\"Close\"], [aria-label=\"close\"], "
+                    + "  '[class*=\"dismiss\"], button[class*=\"cancel\"], "
+                    + "  '[class*=\"modal\"] button, [class*=\"popup\"] button, "
+                    + "  '[class*=\"overlay\"] button'"
+                    + ");"
+                    + "for (const btn of closeButtons) {"
+                    + "  const text = btn.textContent.toLowerCase().trim();"
+                    + "  if (text === 'x' || text === '×' || text === '' || text.includes('close') || "
+                    + "      text.includes('cancel') || text.includes('dismiss') || text.includes('not now') || "
+                    + "      text.includes('skip') || text.includes('later') || text.includes('no thanks')) {"
+                    + "    btn.click(); return true;"
+                    + "  }"
+                    + "}"
+                    // Remove modal/overlay elements directly
+                    + "const overlays = document.querySelectorAll("
+                    + "  '[class*=\"modal\"], [class*=\"overlay\"], [class*=\"popup\"], "
+                    + "  '[class*=\"location-prompt\"], [class*=\"location_prompt\"]'"
+                    + ");"
+                    + "for (const el of overlays) {"
+                    + "  if (el.style) { el.style.display = 'none'; }"
+                    + "}"
+                    // Also remove backdrop
+                    + "const backdrops = document.querySelectorAll('[class*=\"backdrop\"], [class*=\"mask\"]');"
+                    + "for (const el of backdrops) {"
+                    + "  if (el.style) { el.style.display = 'none'; }"
+                    + "}"
+                    + "return false;"
+                    + "}";
+            page.evaluate(dismissJs);
+            page.waitForTimeout(500);
+
+            // Try pressing Escape as well
+            page.keyboard().press("Escape");
+            page.waitForTimeout(300);
+        } catch (Exception e) {
+            log.debug("Popup dismissal attempt: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Clear the JioMart cart before adding new items.
+     */
+    public boolean clearJioMartCart(BotSession session) {
+        BrowserContext context = activeSessions.get(session.getId());
+        if (context == null) return false;
+
+        Page cartPage = null;
+        try {
+            cartPage = context.newPage();
+            cartPage.navigate(botConfig.getJiomartBaseUrl() + "/viewcart");
+            cartPage.waitForLoadState(LoadState.NETWORKIDLE);
+            cartPage.waitForTimeout(2000);
+            dismissPopups(cartPage);
+
+            // Remove all items from cart
+            String clearJs = "() => {"
+                    + "const removeButtons = document.querySelectorAll("
+                    + "  '[class*=\"remove\"], [class*=\"delete\"], [class*=\"Remove\"], [class*=\"Delete\"], "
+                    + "  'button[aria-label*=\"remove\"], button[aria-label*=\"delete\"]'"
+                    + ");"
+                    + "let removed = 0;"
+                    + "for (const btn of removeButtons) {"
+                    + "  btn.click(); removed++;"
+                    + "}"
+                    + "return removed;"
+                    + "}";
+
+            Object result = cartPage.evaluate(clearJs);
+            int removed = result instanceof Number ? ((Number) result).intValue() : 0;
+
+            if (removed > 0) {
+                cartPage.waitForTimeout(2000);
+                log.info("Cleared {} items from JioMart cart for session: {}", removed, session.getId());
+            } else {
+                log.info("JioMart cart was already empty for session: {}", session.getId());
+            }
+
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to clear JioMart cart: {}", e.getMessage());
+            return false;
+        } finally {
+            if (cartPage != null) {
+                try { cartPage.close(); } catch (Exception ignored) {}
+            }
+        }
     }
 
     private double extractPrice(String priceText) {

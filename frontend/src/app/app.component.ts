@@ -167,9 +167,22 @@ export class AppComponent {
   placeOrder(): void {
     if (!this.selectedSessionId || this.cart.length === 0 || !this.selectedAddress) return;
     this.placingOrder = true;
-    this.orderMessage = 'Adding products to cart and placing order...';
+    this.orderMessage = 'Clearing existing JioMart cart...';
 
-    // Add all products to cart first, then place the order
+    // Step 1: Clear existing JioMart cart first
+    this.api.clearJioMartCart(this.selectedSessionId!).subscribe({
+      next: () => {
+        this.addProductsToCart();
+      },
+      error: () => {
+        // Even if clear fails, proceed with adding
+        this.addProductsToCart();
+      }
+    });
+  }
+
+  private addProductsToCart(): void {
+    this.orderMessage = 'Adding products to JioMart cart...';
     let addedCount = 0;
     const totalProducts = this.cart.length;
 
