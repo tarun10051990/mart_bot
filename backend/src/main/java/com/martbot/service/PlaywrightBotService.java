@@ -762,12 +762,7 @@ public class PlaywrightBotService {
                     + "const addresses = [];"
                     + "const seenTexts = new Set();"
                     // Look for address cards/containers
-                    + "const addressCards = document.querySelectorAll("
-                    + "  '[class*=\"address-card\"], [class*=\"addressCard\"], "
-                    + "  '[class*=\"address-item\"], [class*=\"savedAddress\"], "
-                    + "  '[class*=\"addr-card\"], [class*=\"my-address\"], "
-                    + "  '[class*=\"address_card\"], [class*=\"delivery-address\"]'"
-                    + ");"
+                    + "const addressCards = document.querySelectorAll('[class*=\"address-card\"], [class*=\"addressCard\"], [class*=\"address-item\"], [class*=\"savedAddress\"], [class*=\"addr-card\"], [class*=\"my-address\"], [class*=\"address_card\"], [class*=\"delivery-address\"]');"
                     + "for (const card of addressCards) {"
                     + "  const text = card.textContent.trim();"
                     + "  if (text.length < 15 || seenTexts.has(text)) continue;"
@@ -895,12 +890,7 @@ public class PlaywrightBotService {
         try {
             // Try to close location services popup
             String dismissJs = "() => {"
-                    + "const closeButtons = document.querySelectorAll("
-                    + "  '[class*=\"close\"], [class*=\"Close\"], [aria-label=\"close\"], "
-                    + "  '[class*=\"dismiss\"], button[class*=\"cancel\"], "
-                    + "  '[class*=\"modal\"] button, [class*=\"popup\"] button, "
-                    + "  '[class*=\"overlay\"] button'"
-                    + ");"
+                    + "const closeButtons = document.querySelectorAll('[class*=\"close\"], [class*=\"Close\"], [aria-label=\"close\"], [class*=\"dismiss\"], button[class*=\"cancel\"], [class*=\"modal\"] button, [class*=\"popup\"] button, [class*=\"overlay\"] button');"
                     + "for (const btn of closeButtons) {"
                     + "  const text = btn.textContent.toLowerCase().trim();"
                     + "  if (text === 'x' || text === '×' || text === '' || text.includes('close') || "
@@ -910,10 +900,7 @@ public class PlaywrightBotService {
                     + "  }"
                     + "}"
                     // Remove modal/overlay elements directly
-                    + "const overlays = document.querySelectorAll("
-                    + "  '[class*=\"modal\"], [class*=\"overlay\"], [class*=\"popup\"], "
-                    + "  '[class*=\"location-prompt\"], [class*=\"location_prompt\"]'"
-                    + ");"
+                    + "const overlays = document.querySelectorAll('[class*=\"modal\"], [class*=\"overlay\"], [class*=\"popup\"], [class*=\"location-prompt\"], [class*=\"location_prompt\"]');"
                     + "for (const el of overlays) {"
                     + "  if (el.style) { el.style.display = 'none'; }"
                     + "}"
@@ -952,10 +939,7 @@ public class PlaywrightBotService {
 
             // Remove all items from cart
             String clearJs = "() => {"
-                    + "const removeButtons = document.querySelectorAll("
-                    + "  '[class*=\"remove\"], [class*=\"delete\"], [class*=\"Remove\"], [class*=\"Delete\"], "
-                    + "  'button[aria-label*=\"remove\"], button[aria-label*=\"delete\"]'"
-                    + ");"
+                    + "const removeButtons = document.querySelectorAll('[class*=\"remove\"], [class*=\"delete\"], [class*=\"Remove\"], [class*=\"Delete\"], button[aria-label*=\"remove\"], button[aria-label*=\"delete\"]');"
                     + "let removed = 0;"
                     + "for (const btn of removeButtons) {"
                     + "  btn.click(); removed++;"
