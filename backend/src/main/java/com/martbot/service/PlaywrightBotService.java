@@ -726,100 +726,83 @@ public class PlaywrightBotService {
     @SuppressWarnings("unchecked")
     public List<Map<String, String>> fetchAddresses(BotSession session) {
         List<Map<String, String>> addresses = new ArrayList<>();
-        BrowserContext context = activeSessions.get(session.getId());
 
-        if (context == null) {
-            log.error("No active session found for session ID: {}", session.getId());
+        // Use JioMart's direct API to fetch addresses (much more reliable than DOM scraping)
+        String accessToken = session.getCraAccessToken();
+        String refreshToken = session.getCraRefreshToken();
+
+        if (accessToken == null || accessToken.isEmpty()) {
+            log.error("No CRA access token for session: {}", session.getId());
             return addresses;
         }
 
-        Page addressPage = null;
         try {
-            addressPage = context.newPage();
+            log.info("Fetching addresses from JioMart API for session: {}", session.getId());
 
-            // Navigate to JioMart address management page (try multiple URLs)
-            log.info("Fetching addresses from JioMart for session: {}", session.getId());
-            addressPage.navigate(botConfig.getJiomartBaseUrl() + "/myaccount/myaddresses");
-            addressPage.waitForLoadState(LoadState.NETWORKIDLE);
-            addressPage.waitForTimeout(2000);
+            java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
+                    .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+                    .build();
 
-            // Dismiss any location popups
-            dismissPopups(addressPage);
-            addressPage.waitForTimeout(1000);
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create("https://api.jiomart.com/service/application/cart/v1.0/address"))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("Cookie", "cra_access_token=" + accessToken + "; cra_refresh_token=" + refreshToken)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Origin", "https://www.jiomart.com")
+                    .header("Referer", "https://www.jiomart.com/")
+                    .GET()
+                    .build();
 
-            // Check if page redirected or shows login prompt; try alternate URL
-            String currentUrl = addressPage.url();
-            if (currentUrl.contains("login") || currentUrl.contains("auth")) {
-                log.info("Address page redirected to login, trying alternate URL...");
-                addressPage.navigate(botConfig.getJiomartBaseUrl() + "/account/addresses");
-                addressPage.waitForLoadState(LoadState.NETWORKIDLE);
-                addressPage.waitForTimeout(2000);
-                dismissPopups(addressPage);
+            java.net.http.HttpResponse<String> response = httpClient.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                ObjectMapper mapper = new ObjectMapper();
+                JsonNode root = mapper.readTree(response.body());
+                JsonNode addressList = root.has("address") ? root.get("address") : null;
+
+                if (addressList != null && addressList.isArray()) {
+                    for (JsonNode addr : addressList) {
+                        Map<String, String> addressMap = new LinkedHashMap<>();
+
+                        String name = addr.has("name") ? addr.get("name").asText("") : "";
+                        String phone = addr.has("phone") ? addr.get("phone").asText("") : "";
+                        String pincode = addr.has("area_code") ? addr.get("area_code").asText("") : "";
+                        String city = addr.has("city") ? addr.get("city").asText("") : "";
+                        String state = addr.has("state") ? addr.get("state").asText("") : "";
+                        String address1 = addr.has("address1") ? addr.get("address1").asText("") : "";
+                        String address2 = addr.has("address2") ? addr.get("address2").asText("") : "";
+                        String landmark = addr.has("landmark") ? addr.get("landmark").asText("") : "";
+                        String area = addr.has("area") ? addr.get("area").asText("") : "";
+                        String addressType = addr.has("address_type") ? addr.get("address_type").asText("home") : "home";
+
+                        // Build full address string
+                        StringBuilder fullAddr = new StringBuilder();
+                        if (!address2.isEmpty()) fullAddr.append(address2).append(", ");
+                        if (!address1.isEmpty()) fullAddr.append(address1).append(", ");
+                        if (!landmark.isEmpty() && !landmark.equals(area)) fullAddr.append(landmark).append(", ");
+                        if (!area.isEmpty()) fullAddr.append(area).append(", ");
+                        if (!city.isEmpty()) fullAddr.append(city).append(", ");
+                        if (!state.isEmpty()) fullAddr.append(state).append(" ");
+                        if (!pincode.isEmpty()) fullAddr.append("- ").append(pincode);
+
+                        addressMap.put("name", name);
+                        addressMap.put("phone", phone);
+                        addressMap.put("pincode", pincode);
+                        addressMap.put("type", addressType);
+                        addressMap.put("fullAddress", fullAddr.toString().replaceAll(",\\s*$", "").trim());
+                        addressMap.put("city", city);
+                        addressMap.put("state", state);
+
+                        addresses.add(addressMap);
+                    }
+                }
+                log.info("Found {} addresses from JioMart API for session: {}", addresses.size(), session.getId());
+            } else {
+                log.warn("JioMart address API returned status {}: {}", response.statusCode(), response.body());
             }
-
-            // Extract addresses from the page using JavaScript
-            String jsCode = "() => {"
-                    + "const addresses = [];"
-                    + "const seenTexts = new Set();"
-                    // Look for address cards/containers
-                    + "const addressCards = document.querySelectorAll('[class*=\"address-card\"], [class*=\"addressCard\"], [class*=\"address-item\"], [class*=\"savedAddress\"], [class*=\"addr-card\"], [class*=\"my-address\"], [class*=\"address_card\"], [class*=\"delivery-address\"]');"
-                    + "for (const card of addressCards) {"
-                    + "  const text = card.textContent.trim();"
-                    + "  if (text.length < 15 || seenTexts.has(text)) continue;"
-                    + "  const lower = text.toLowerCase();"
-                    + "  if (lower.includes('add new') && text.length < 40) continue;"
-                    + "  if (lower.includes('enable location') || lower.includes('detect my location')) continue;"
-                    + "  seenTexts.add(text);"
-                    + "  let name = '';"
-                    + "  const nameEl = card.querySelector('[class*=\"name\"], [class*=\"Name\"], strong, b, h3, h4');"
-                    + "  if (nameEl) name = nameEl.textContent.trim();"
-                    + "  let phone = '';"
-                    + "  const phoneMatch = text.match(/(\\+91[\\s-]?|91[\\s-]?)?[6-9]\\d{9}/);"
-                    + "  if (phoneMatch) phone = phoneMatch[0].trim();"
-                    + "  let pincode = '';"
-                    + "  const pincodeMatch = text.match(/\\b[1-9]\\d{5}\\b/);"
-                    + "  if (pincodeMatch) pincode = pincodeMatch[0];"
-                    + "  let type = 'Home';"
-                    + "  if (lower.includes('office') || lower.includes('work')) type = 'Office';"
-                    + "  let fullAddress = text.replace(/\\s+/g, ' ').trim();"
-                    + "  if (fullAddress.length < 10) continue;"
-                    + "  addresses.push({ name, phone, pincode, type, fullAddress });"
-                    + "}"
-                    // Fallback: look for elements with pincode pattern
-                    + "if (addresses.length === 0) {"
-                    + "  const allElements = document.querySelectorAll('div, li, section, p');"
-                    + "  for (const el of allElements) {"
-                    + "    if (el.children.length > 5) continue;"
-                    + "    const text = el.textContent.trim();"
-                    + "    if (text.length < 20 || text.length > 500) continue;"
-                    + "    const lower = text.toLowerCase();"
-                    + "    if (lower.includes('enable location') || lower.includes('detect my location')) continue;"
-                    + "    const pincodeMatch = text.match(/\\b[1-9]\\d{5}\\b/);"
-                    + "    if (pincodeMatch && !seenTexts.has(text)) {"
-                    + "      seenTexts.add(text);"
-                    + "      let phone = '';"
-                    + "      const phoneMatch = text.match(/(\\+91[\\s-]?|91[\\s-]?)?[6-9]\\d{9}/);"
-                    + "      if (phoneMatch) phone = phoneMatch[0].trim();"
-                    + "      addresses.push({ name: '', phone, pincode: pincodeMatch[0], type: 'Home', fullAddress: text.replace(/\\s+/g, ' ').trim() });"
-                    + "    }"
-                    + "    if (addresses.length >= 10) break;"
-                    + "  }"
-                    + "}"
-                    + "return addresses;"
-                    + "}";
-
-            List<Map<String, String>> result = (List<Map<String, String>>) addressPage.evaluate(jsCode);
-            if (result != null) {
-                addresses.addAll(result);
-            }
-
-            log.info("Found {} addresses for session: {}", addresses.size(), session.getId());
         } catch (Exception e) {
-            log.error("Failed to fetch addresses for session: {}", session.getId(), e);
-        } finally {
-            if (addressPage != null) {
-                try { addressPage.close(); } catch (Exception ignored) {}
-            }
+            log.error("Failed to fetch addresses from JioMart API for session: {}", session.getId(), e);
         }
 
         return addresses;
