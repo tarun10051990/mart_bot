@@ -726,55 +726,75 @@ public class PlaywrightBotService {
     @SuppressWarnings("unchecked")
     public List<Map<String, String>> fetchAddresses(BotSession session) {
         List<Map<String, String>> addresses = new ArrayList<>();
+        BrowserContext context = activeSessions.get(session.getId());
 
-        // Use JioMart's direct API to fetch addresses (much more reliable than DOM scraping)
-        String accessToken = session.getCraAccessToken();
-        String refreshToken = session.getCraRefreshToken();
-
-        if (accessToken == null || accessToken.isEmpty()) {
-            log.error("No CRA access token for session: {}", session.getId());
+        if (context == null) {
+            log.error("No active session found for session ID: {}", session.getId());
             return addresses;
         }
 
+        Page apiPage = null;
         try {
             log.info("Fetching addresses from JioMart API for session: {}", session.getId());
+            apiPage = context.newPage();
 
-            java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
-                    .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
-                    .build();
+            // Navigate to JioMart first so fetch() has the right origin and cookies
+            apiPage.navigate(botConfig.getJiomartBaseUrl());
+            apiPage.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            apiPage.waitForTimeout(1000);
 
-            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create("https://api.jiomart.com/service/application/cart/v1.0/address"))
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "application/json")
-                    .header("Cookie", "cra_access_token=" + accessToken + "; cra_refresh_token=" + refreshToken)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    .header("Origin", "https://www.jiomart.com")
-                    .header("Referer", "https://www.jiomart.com/")
-                    .GET()
-                    .build();
+            // Use fetch() from within the browser to call JioMart address API
+            String fetchJs = "async () => {"
+                    + "  try {"
+                    + "    const resp = await fetch('https://api.jiomart.com/service/application/cart/v1.0/address', {"
+                    + "      method: 'GET',"
+                    + "      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },"
+                    + "      credentials: 'include'"
+                    + "    });"
+                    + "    if (!resp.ok) return { error: 'HTTP ' + resp.status };"
+                    + "    const data = await resp.json();"
+                    + "    return data;"
+                    + "  } catch(e) { return { error: e.message }; }"
+                    + "}";
 
-            java.net.http.HttpResponse<String> response = httpClient.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+            Object result = apiPage.evaluate(fetchJs);
 
-            if (response.statusCode() == 200) {
-                ObjectMapper mapper = new ObjectMapper();
-                JsonNode root = mapper.readTree(response.body());
-                JsonNode addressList = root.has("address") ? root.get("address") : null;
+            if (result instanceof Map) {
+                Map<String, Object> responseMap = (Map<String, Object>) result;
 
-                if (addressList != null && addressList.isArray()) {
-                    for (JsonNode addr : addressList) {
+                if (responseMap.containsKey("error")) {
+                    log.warn("JioMart address API error: {}", responseMap.get("error"));
+                    return addresses;
+                }
+
+                Object addressData = responseMap.get("address");
+                if (addressData instanceof List) {
+                    List<Map<String, Object>> addrList = (List<Map<String, Object>>) addressData;
+                    for (Map<String, Object> addr : addrList) {
                         Map<String, String> addressMap = new LinkedHashMap<>();
 
-                        String name = addr.has("name") ? addr.get("name").asText("") : "";
-                        String phone = addr.has("phone") ? addr.get("phone").asText("") : "";
-                        String pincode = addr.has("area_code") ? addr.get("area_code").asText("") : "";
-                        String city = addr.has("city") ? addr.get("city").asText("") : "";
-                        String state = addr.has("state") ? addr.get("state").asText("") : "";
-                        String address1 = addr.has("address1") ? addr.get("address1").asText("") : "";
-                        String address2 = addr.has("address2") ? addr.get("address2").asText("") : "";
-                        String landmark = addr.has("landmark") ? addr.get("landmark").asText("") : "";
-                        String area = addr.has("area") ? addr.get("area").asText("") : "";
-                        String addressType = addr.has("address_type") ? addr.get("address_type").asText("home") : "home";
+                        String name = String.valueOf(addr.getOrDefault("name", ""));
+                        String phone = String.valueOf(addr.getOrDefault("phone", ""));
+                        String pincode = String.valueOf(addr.getOrDefault("area_code", ""));
+                        String city = String.valueOf(addr.getOrDefault("city", ""));
+                        String state = String.valueOf(addr.getOrDefault("state", ""));
+                        String address1 = String.valueOf(addr.getOrDefault("address1", ""));
+                        String address2 = String.valueOf(addr.getOrDefault("address2", ""));
+                        String landmark = String.valueOf(addr.getOrDefault("landmark", ""));
+                        String area = String.valueOf(addr.getOrDefault("area", ""));
+                        String addressType = String.valueOf(addr.getOrDefault("address_type", "home"));
+
+                        // Clean "null" strings
+                        if ("null".equals(name)) name = "";
+                        if ("null".equals(phone)) phone = "";
+                        if ("null".equals(pincode)) pincode = "";
+                        if ("null".equals(city)) city = "";
+                        if ("null".equals(state)) state = "";
+                        if ("null".equals(address1)) address1 = "";
+                        if ("null".equals(address2)) address2 = "";
+                        if ("null".equals(landmark)) landmark = "";
+                        if ("null".equals(area)) area = "";
+                        if ("null".equals(addressType)) addressType = "home";
 
                         // Build full address string
                         StringBuilder fullAddr = new StringBuilder();
@@ -797,12 +817,15 @@ public class PlaywrightBotService {
                         addresses.add(addressMap);
                     }
                 }
-                log.info("Found {} addresses from JioMart API for session: {}", addresses.size(), session.getId());
-            } else {
-                log.warn("JioMart address API returned status {}: {}", response.statusCode(), response.body());
             }
+
+            log.info("Found {} addresses from JioMart API for session: {}", addresses.size(), session.getId());
         } catch (Exception e) {
-            log.error("Failed to fetch addresses from JioMart API for session: {}", session.getId(), e);
+            log.error("Failed to fetch addresses for session: {}", session.getId(), e);
+        } finally {
+            if (apiPage != null) {
+                try { apiPage.close(); } catch (Exception ignored) {}
+            }
         }
 
         return addresses;
